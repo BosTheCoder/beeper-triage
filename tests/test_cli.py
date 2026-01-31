@@ -7,6 +7,7 @@ from beeper_triage.cli import (
     _copy_to_clipboard,
     _detect_clipboard_cmd,
     _format_transcript_with_timestamps,
+    _normalize_message_window,
     _pick_action,
 )
 
@@ -118,3 +119,14 @@ def test_pick_action_invalid_then_valid():
 def test_pick_action_ctrl_c():
     with patch("builtins.input", side_effect=KeyboardInterrupt):
         assert _pick_action() is None
+
+
+def test_normalize_message_window_aliases():
+    assert _normalize_message_window("today") == "today"
+    assert _normalize_message_window("couple days") == "2d"
+    assert _normalize_message_window("week") == "7d"
+    assert _normalize_message_window("two weeks") == "14d"
+    assert _normalize_message_window("month") == "30d"
+    assert _normalize_message_window("couple months") == "60d"
+    assert _normalize_message_window("year") == "365d"
+    assert _normalize_message_window("all") == "all"

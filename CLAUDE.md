@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### Core Workflow
 
-1. Fetch unread Beeper chats that need replies
+1. Fetch Beeper chats that need replies
 2. User selects a chat interactively via `fzf` (fuzzy finder)
 3. Retrieve full message history from the selected chat
 4. User chooses an action: **Reply** (continue to LLM draft) or **Copy to clipboard** (copy transcript and exit)
@@ -77,7 +77,7 @@ Optional variables:
 ### Running the Application
 
 ```bash
-# Basic usage - triage unread chats needing replies
+# Basic usage - triage chats needing replies
 beeper-triage triage
 
 # Or via module directly
@@ -141,9 +141,8 @@ All caught and converted to `typer.BadParameter()` for user-friendly CLI output.
 ### Chat Filtering Logic ("Needs Reply")
 
 A chat is included in triage if:
-1. `unread_count > 0` (has unread messages)
-2. `preview.is_sender == False` (last message is NOT from the authenticated user)
-3. Chat is not muted (unless `--include-muted` flag used)
+1. `preview.is_sender == False` (last message is NOT from the authenticated user)
+2. Chat is not muted (unless `--include-muted` flag used)
 
 This MVP filter avoids replying to your own messages and focuses on chats awaiting response.
 
@@ -215,7 +214,7 @@ The LLM generates a single reply, which is then presented to the user for editin
 
 ### Modifying Chat Selection Logic
 
-Edit the `_needs_reply()` function in `cli.py` to change the filtering criteria. Currently checks: unread count, last message sender, and mute status.
+Edit the `_needs_reply()` function in `cli.py` to change the filtering criteria. Currently checks: last message sender and mute status.
 
 ### Adding New CLI Options
 

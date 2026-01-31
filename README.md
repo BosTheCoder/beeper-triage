@@ -31,8 +31,12 @@ python -m beeper_triage.cli triage
 
 ```bash
 python -m beeper_triage.cli triage --max-chats 30 --max-messages 40
+python -m beeper_triage.cli triage --message-window 7d
 python -m beeper_triage.cli triage --model openai/gpt-4o-mini
 python -m beeper_triage.cli triage --no-llm --dry-run
+
+After selecting a chat, the CLI prompts for a message window (today, 2d, 7d, 14d, 30d, 60d, 365d, all).
+Use `--message-window` to skip the prompt. `--max-messages` is optional; omit it to fetch the full window.
 ```
 
 ## Actions
@@ -41,10 +45,11 @@ After selecting a chat, you choose an action:
 
 - **Reply** -- generate an LLM draft and send (or preview with `--dry-run`)
 - **Copy to clipboard** -- copy the full conversation transcript to the system clipboard
+- **Export to folder** -- write a timestamped transcript to `exports/`
 
 Clipboard support: `clip.exe` (WSL), `wl-copy` (Wayland), `xclip`, `xsel`.
 
 ## Notes
 
 - Requires `fzf` on PATH for chat selection.
-- Uses MVP "needs reply" filter: unread_count > 0 and preview.is_sender == False.
+- Uses MVP "needs reply" filter: preview.is_sender == False.

@@ -99,38 +99,76 @@ class BeeperClient:
                 f"Failed to fetch chat details via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
-    def list_messages(self, chat_id: str, limit: int) -> list[BeeperMessage]:
+    def list_messages(
+        self, chat_id: str, limit: Optional[int] = None, since_ms: Optional[int] = None
+    ) -> list[BeeperMessage]:
         try:
             page = self._client.messages.list(chat_id=chat_id)
-            messages = page.items[:limit]  # SDK returns paginated result, manually limit
         except Exception as exc:
             raise BeeperSDKError(
                 f"Failed to list messages via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
         results: list[BeeperMessage] = []
-        for msg in messages:
-            # Handle timestamp conversion - could be int (timestamp_ms) or datetime (timestamp)
-            timestamp_value = self._get_attr(msg, "timestamp_ms", "timestamp", default=0) or 0
-            if isinstance(timestamp_value, datetime.datetime):
-                # Convert datetime to milliseconds since epoch
-                timestamp_ms = int(timestamp_value.timestamp() * 1000)
-            else:
-                timestamp_ms = int(timestamp_value)
+        stopped_for_since = False
 
-            results.append(
-                BeeperMessage(
-                    message_id=str(self._get_attr(msg, "message_id", "id")),
-                    sender_name=str(
-                        self._get_attr(
-                            msg, "sender_name", "sender", "author", default="Unknown"
-                        )
-                    ),
-                    is_sender=bool(self._get_attr(msg, "is_sender", default=False)),
-                    text=str(self._get_attr(msg, "text", "body", default="")),
-                    timestamp_ms=timestamp_ms,
+        for page in page.iter_pages():
+            page_items = list(page.items)
+            if not page_items:
+                break
+
+            normalized: list[BeeperMessage] = []
+            timestamps: list[int] = []
+            for msg in page_items:
+                # Handle timestamp conversion - could be int (timestamp_ms) or datetime (timestamp)
+                timestamp_value = (
+                    self._get_attr(msg, "timestamp_ms", "timestamp", default=0) or 0
                 )
-            )
+                if isinstance(timestamp_value, datetime.datetime):
+                    # Convert datetime to milliseconds since epoch
+                    timestamp_ms = int(timestamp_value.timestamp() * 1000)
+                else:
+                    timestamp_ms = int(timestamp_value)
+
+                timestamps.append(timestamp_ms)
+                normalized.append(
+                    BeeperMessage(
+                        message_id=str(self._get_attr(msg, "message_id", "id")),
+                        sender_name=str(
+                            self._get_attr(
+                                msg, "sender_name", "sender", "author", default="Unknown"
+                            )
+                        ),
+                        is_sender=bool(self._get_attr(msg, "is_sender", default=False)),
+                        text=str(self._get_attr(msg, "text", "body", default="")),
+                        timestamp_ms=timestamp_ms,
+                    )
+                )
+
+            descending = len(timestamps) < 2 or timestamps[0] >= timestamps[-1]
+
+            for normalized_msg in normalized:
+                if since_ms is not None and normalized_msg.timestamp_ms < since_ms:
+                    if descending:
+                        stopped_for_since = True
+                        break
+                    continue
+                results.append(normalized_msg)
+                if limit is not None and len(results) >= limit:
+                    break
+
+            if (limit is not None and len(results) >= limit) or stopped_for_since:
+                break
+
+            if (
+                since_ms is not None
+                and descending
+                and timestamps
+                and min(timestamps) < since_ms
+            ):
+                stopped_for_since = True
+                break
+
         return results
 
     def send_message(
