@@ -99,6 +99,20 @@ def _copy_to_clipboard(text: str, cmd: list[str]) -> None:
     subprocess.run(cmd, input=text, text=True, check=True)
 
 
+def _pick_action() -> Optional[str]:
+    """Prompt user to pick an action. Returns 'reply', 'copy', or None (cancelled)."""
+    try:
+        while True:
+            choice = input("\nAction: [1] Reply  [2] Copy to clipboard\n> ").strip()
+            if choice == "" or choice == "1":
+                return "reply"
+            if choice == "2":
+                return "copy"
+            typer.echo("Invalid choice. Enter 1 or 2.")
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+
 def _last_message_from_others(messages: Iterable[BeeperMessage]) -> Optional[str]:
     last_id: Optional[str] = None
     for msg in messages:

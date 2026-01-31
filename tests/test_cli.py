@@ -1,7 +1,14 @@
 """Tests for cli helper functions."""
 
+from unittest.mock import MagicMock, patch
+
 from beeper_triage.beeper_client import BeeperMessage
-from beeper_triage.cli import _format_transcript_with_timestamps
+from beeper_triage.cli import (
+    _copy_to_clipboard,
+    _detect_clipboard_cmd,
+    _format_transcript_with_timestamps,
+    _pick_action,
+)
 
 
 def test_format_transcript_with_timestamps():
@@ -55,11 +62,6 @@ def test_format_transcript_with_timestamps_skips_empty():
     assert "Hello" in lines[0]
 
 
-from unittest.mock import patch, MagicMock
-
-from beeper_triage.cli import _detect_clipboard_cmd, _copy_to_clipboard
-
-
 def test_detect_clipboard_cmd_clip_exe():
     """clip.exe should be preferred (WSL)."""
     with patch("shutil.which", side_effect=lambda cmd: "/mnt/c/clip.exe" if cmd == "clip.exe" else None):
@@ -91,3 +93,28 @@ def test_copy_to_clipboard_success():
         mock_run.return_value = MagicMock(returncode=0)
         _copy_to_clipboard("hello", ["clip.exe"])
         mock_run.assert_called_once_with(["clip.exe"], input="hello", text=True, check=True)
+
+
+def test_pick_action_reply():
+    with patch("builtins.input", return_value="1"):
+        assert _pick_action() == "reply"
+
+
+def test_pick_action_copy():
+    with patch("builtins.input", return_value="2"):
+        assert _pick_action() == "copy"
+
+
+def test_pick_action_default_is_reply():
+    with patch("builtins.input", return_value=""):
+        assert _pick_action() == "reply"
+
+
+def test_pick_action_invalid_then_valid():
+    with patch("builtins.input", side_effect=["3", "2"]):
+        assert _pick_action() == "copy"
+
+
+def test_pick_action_ctrl_c():
+    with patch("builtins.input", side_effect=KeyboardInterrupt):
+        assert _pick_action() is None
