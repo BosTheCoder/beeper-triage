@@ -11,9 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 1. Fetch unread Beeper chats that need replies
 2. User selects a chat interactively via `fzf` (fuzzy finder)
 3. Retrieve full message history from the selected chat
-4. Generate a draft reply using an LLM (via OpenRouter API)
-5. Open user's configured text editor to review/modify the draft
-6. Send the reply back through Beeper or preview in dry-run mode
+4. User chooses an action: **Reply** (continue to LLM draft) or **Copy to clipboard** (copy transcript and exit)
+5. Generate a draft reply using an LLM (via OpenRouter API)
+6. Open user's configured text editor to review/modify the draft
+7. Send the reply back through Beeper or preview in dry-run mode
 
 ## Repository Structure
 
@@ -33,7 +34,7 @@ beeper-triage/
 
 ### Key Modules
 
-- **cli.py**: Entry point (`beeper-triage triage`). Orchestrates the full workflow: chat filtering, selection, message fetching, LLM generation, editing, and sending. Custom exceptions (BeeperSDKError, OpenRouterError, EditorError) converted to user-friendly CLI errors.
+- **cli.py**: Entry point (`beeper-triage triage`). Orchestrates the full workflow: chat filtering, selection, message fetching, action choice (reply or copy to clipboard), LLM generation, editing, and sending. Includes helpers for clipboard detection (`_detect_clipboard_cmd()`), transcript formatting with timestamps (`_format_transcript_with_timestamps()`), and clipboard copy (`_copy_to_clipboard()`). Custom exceptions (BeeperSDKError, OpenRouterError, EditorError) converted to user-friendly CLI errors.
 
 - **beeper_client.py**: Wrapper around the official `beeper_desktop_api` SDK. Provides `list_chats()` and `list_messages()` methods with normalized response handling via `BeeperChat` and `BeeperMessage` dataclasses. Includes resilient attribute extraction (`_get_attr()`) to handle API schema variations.
 
@@ -104,6 +105,10 @@ beeper-triage triage --include-muted
 beeper-triage triage --max-chats 20 --no-llm --dry-run
 ```
 
+After selecting a chat, you are prompted to choose an action:
+- **[1] Reply** -- proceeds with the LLM draft and reply flow
+- **[2] Copy to clipboard** -- formats the transcript with timestamps and copies it to the system clipboard (supports `clip.exe` on WSL, `wl-copy`, `xclip`, `xsel`)
+
 ## Architecture and Design
 
 ### Design Patterns
@@ -141,6 +146,10 @@ A chat is included in triage if:
 3. Chat is not muted (unless `--include-muted` flag used)
 
 This MVP filter avoids replying to your own messages and focuses on chats awaiting response.
+
+### Action Choice Flow
+
+After a chat is selected and messages are fetched, the user is prompted with `[1] Reply  [2] Copy to clipboard`. Choosing "copy" formats the full transcript with human-readable timestamps and pipes it to a detected clipboard command. The tool auto-detects the appropriate clipboard utility for the platform (`clip.exe` for WSL, `wl-copy` for Wayland, `xclip`/`xsel` for X11).
 
 ## Dependencies
 

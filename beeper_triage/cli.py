@@ -68,6 +68,7 @@ def _format_transcript(messages: Iterable[BeeperMessage]) -> str:
 
 
 def _format_transcript_with_timestamps(messages: Iterable[BeeperMessage]) -> str:
+    """Format messages as a timestamped transcript for clipboard export."""
     lines: list[str] = []
     for msg in messages:
         speaker = "You" if msg.is_sender else msg.sender_name

@@ -35,7 +35,16 @@ python -m beeper_triage.cli triage --model openai/gpt-4o-mini
 python -m beeper_triage.cli triage --no-llm --dry-run
 ```
 
+## Actions
+
+After selecting a chat, you choose an action:
+
+- **Reply** -- generate an LLM draft and send (or preview with `--dry-run`)
+- **Copy to clipboard** -- copy the full conversation transcript to the system clipboard
+
+Clipboard support: `clip.exe` (WSL), `wl-copy` (Wayland), `xclip`, `xsel`.
+
 ## Notes
 
 - Requires `fzf` on PATH for chat selection.
-- Uses MVP “needs reply” filter: unread_count > 0 and preview.is_sender == False.
+- Uses MVP "needs reply" filter: unread_count > 0 and preview.is_sender == False.
