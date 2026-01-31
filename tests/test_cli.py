@@ -53,3 +53,41 @@ def test_format_transcript_with_timestamps_skips_empty():
     lines = result.strip().split("\n")
     assert len(lines) == 1
     assert "Hello" in lines[0]
+
+
+from unittest.mock import patch, MagicMock
+
+from beeper_triage.cli import _detect_clipboard_cmd, _copy_to_clipboard
+
+
+def test_detect_clipboard_cmd_clip_exe():
+    """clip.exe should be preferred (WSL)."""
+    with patch("shutil.which", side_effect=lambda cmd: "/mnt/c/clip.exe" if cmd == "clip.exe" else None):
+        assert _detect_clipboard_cmd() == ["clip.exe"]
+
+
+def test_detect_clipboard_cmd_wl_copy():
+    with patch("shutil.which", side_effect=lambda cmd: "/usr/bin/wl-copy" if cmd == "wl-copy" else None):
+        assert _detect_clipboard_cmd() == ["wl-copy"]
+
+
+def test_detect_clipboard_cmd_xclip():
+    with patch("shutil.which", side_effect=lambda cmd: "/usr/bin/xclip" if cmd == "xclip" else None):
+        assert _detect_clipboard_cmd() == ["xclip", "-selection", "clipboard"]
+
+
+def test_detect_clipboard_cmd_xsel():
+    with patch("shutil.which", side_effect=lambda cmd: "/usr/bin/xsel" if cmd == "xsel" else None):
+        assert _detect_clipboard_cmd() == ["xsel", "--clipboard", "--input"]
+
+
+def test_detect_clipboard_cmd_none():
+    with patch("shutil.which", return_value=None):
+        assert _detect_clipboard_cmd() is None
+
+
+def test_copy_to_clipboard_success():
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0)
+        _copy_to_clipboard("hello", ["clip.exe"])
+        mock_run.assert_called_once_with(["clip.exe"], input="hello", text=True, check=True)

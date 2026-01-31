@@ -80,6 +80,25 @@ def _format_transcript_with_timestamps(messages: Iterable[BeeperMessage]) -> str
     return "\n".join(lines).strip()
 
 
+def _detect_clipboard_cmd() -> Optional[list[str]]:
+    """Return the command list for the first available clipboard tool, or None."""
+    candidates = [
+        (["clip.exe"], "clip.exe"),
+        (["wl-copy"], "wl-copy"),
+        (["xclip", "-selection", "clipboard"], "xclip"),
+        (["xsel", "--clipboard", "--input"], "xsel"),
+    ]
+    for cmd, binary in candidates:
+        if shutil.which(binary):
+            return cmd
+    return None
+
+
+def _copy_to_clipboard(text: str, cmd: list[str]) -> None:
+    """Pipe text into the given clipboard command."""
+    subprocess.run(cmd, input=text, text=True, check=True)
+
+
 def _last_message_from_others(messages: Iterable[BeeperMessage]) -> Optional[str]:
     last_id: Optional[str] = None
     for msg in messages:
