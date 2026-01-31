@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import shutil
@@ -63,6 +64,19 @@ def _format_transcript(messages: Iterable[BeeperMessage]) -> str:
         if not text:
             continue
         lines.append(f"{speaker}: {text}")
+    return "\n".join(lines).strip()
+
+
+def _format_transcript_with_timestamps(messages: Iterable[BeeperMessage]) -> str:
+    lines: list[str] = []
+    for msg in messages:
+        speaker = "You" if msg.is_sender else msg.sender_name
+        text = msg.text.strip()
+        if not text:
+            continue
+        dt = datetime.datetime.fromtimestamp(msg.timestamp_ms / 1000)
+        ts = dt.strftime("%Y-%m-%d %H:%M")
+        lines.append(f"[{ts}] {speaker}: {text}")
     return "\n".join(lines).strip()
 
 
