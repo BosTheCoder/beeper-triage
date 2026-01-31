@@ -147,13 +147,6 @@ def triage(
     default_model = os.getenv("OPENROUTER_MODEL", "")
     editor = os.getenv("EDITOR", "")
 
-    if not no_llm:
-        if not model:
-            model = default_model
-        if not model:
-            raise typer.BadParameter("OPENROUTER_MODEL or --model is required.")
-        _require_env("OPENROUTER_API_KEY")
-
     base_url = os.getenv("BEEPER_BASE_URL")
 
     try:
@@ -200,7 +193,34 @@ def triage(
 
     reply_to_id = _last_message_from_others(messages_sorted)
 
-    draft = ""
+    action = _pick_action()
+    if action is None:
+        typer.echo("Cancelled.")
+        raise typer.Exit(code=0)
+
+    if action == "copy":
+        clipboard_cmd = _detect_clipboard_cmd()
+        if clipboard_cmd is None:
+            typer.echo(
+                "No clipboard tool found. Install one of: clip.exe (WSL), wl-copy, xclip, xsel"
+            )
+            raise typer.Exit(code=1)
+        timestamped = _format_transcript_with_timestamps(messages_sorted)
+        try:
+            _copy_to_clipboard(timestamped, clipboard_cmd)
+        except subprocess.CalledProcessError as exc:
+            raise typer.BadParameter(f"Clipboard copy failed: {exc}") from exc
+        typer.echo("Transcript copied to clipboard.")
+        raise typer.Exit(code=0)
+
+    # action == "reply" — existing flow continues
+    if not no_llm:
+        if not model:
+            model = default_model
+        if not model:
+            raise typer.BadParameter("OPENROUTER_MODEL or --model is required.")
+        _require_env("OPENROUTER_API_KEY")
+
     if no_llm:
         draft = ""
     else:
