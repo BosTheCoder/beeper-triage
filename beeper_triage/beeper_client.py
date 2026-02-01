@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import json
+import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
@@ -36,6 +38,10 @@ class BeeperChat:
 class BeeperClient:
     """Thin wrapper around the official beeper_desktop_api SDK."""
 
+    CACHE_DIR = os.path.expanduser("~/.cache/beeper-triage")
+    CACHE_FILE = os.path.join(CACHE_DIR, "chats.json")
+    CACHE_TTL_MS = 6 * 60 * 60 * 1000  # 6 hours in milliseconds
+
     def __init__(self, access_token: str, base_url: Optional[str] = None) -> None:
         try:
             from beeper_desktop_api import BeeperDesktop as SDKClient  # type: ignore
@@ -52,13 +58,57 @@ class BeeperClient:
         except Exception as exc:
             raise BeeperSDKError("Failed to initialize Beeper SDK client.") from exc
 
+    def _get_cache(self) -> Optional[list[BeeperChat]]:
+        """Load chats from cache if valid and not expired."""
+        if not os.path.exists(self.CACHE_FILE):
+            return None
+        try:
+            with open(self.CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            timestamp_ms = data.get("timestamp", 0)
+            now_ms = int(datetime.datetime.now().timestamp() * 1000)
+            if now_ms - timestamp_ms > self.CACHE_TTL_MS:
+                return None
+            chats_data = data.get("chats", [])
+            return [BeeperChat(**chat) for chat in chats_data]
+        except Exception:
+            return None
+
+    def _save_cache(self, chats: list[BeeperChat]) -> None:
+        """Save chats to cache with current timestamp."""
+        try:
+            os.makedirs(self.CACHE_DIR, exist_ok=True)
+            timestamp_ms = int(datetime.datetime.now().timestamp() * 1000)
+            data = {
+                "timestamp": timestamp_ms,
+                "chats": [
+                    {
+                        "chat_id": chat.chat_id,
+                        "title": chat.title,
+                        "unread_count": chat.unread_count,
+                        "preview_is_sender": chat.preview_is_sender,
+                        "is_muted": chat.is_muted,
+                    }
+                    for chat in chats
+                ],
+            }
+            with open(self.CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
     def _get_attr(self, obj: Any, *names: str, default: Any = None) -> Any:
         for name in names:
             if hasattr(obj, name):
                 return getattr(obj, name)
         return default
 
-    def list_chats(self) -> list[BeeperChat]:
+    def list_chats(self, use_cache: bool = True) -> list[BeeperChat]:
+        if use_cache:
+            cached = self._get_cache()
+            if cached is not None:
+                return cached
+
         try:
             chats = self._client.chats.list()
         except Exception as exc:
@@ -89,6 +139,8 @@ class BeeperClient:
                     ),
                 )
             )
+
+        self._save_cache(results)
         return results
 
     def get_chat(self, chat_id: str) -> Any:

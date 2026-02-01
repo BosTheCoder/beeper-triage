@@ -264,7 +264,7 @@ def triage(
     model: Optional[str] = typer.Option(
         None, "--model", help="OpenRouter model override"
     ),
-    max_chats: int = typer.Option(50, "--max-chats", min=1),
+    max_chats: int = typer.Option(200, "--max-chats", min=1),
     max_messages: Optional[int] = typer.Option(
         None,
         "--max-messages",
@@ -279,6 +279,9 @@ def triage(
     include_muted: bool = typer.Option(False, "--include-muted"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     no_llm: bool = typer.Option(False, "--no-llm"),
+    refresh_chats: bool = typer.Option(
+        False, "--refresh-chats", help="Force refresh chat cache (bypasses 6-hour TTL)"
+    ),
 ) -> None:
     """Triage Beeper chats and draft a reply."""
 
@@ -304,7 +307,7 @@ def triage(
         raise typer.BadParameter(str(exc)) from exc
 
     try:
-        chats = client.list_chats()
+        chats = client.list_chats(use_cache=not refresh_chats)
     except BeeperSDKError as exc:
         logger.exception("Failed to list chats")
         raise typer.BadParameter(str(exc)) from exc
