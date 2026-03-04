@@ -66,13 +66,13 @@ Create `.env` file with required variables:
 
 ```env
 BEEPER_ACCESS_TOKEN=your_beeper_token
+BEEPER_BASE_URL=http://172.28.96.1:23373
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
 EDITOR=vim
 ```
 
-Optional variables:
-- `BEEPER_BASE_URL`: Override default Beeper API endpoint (useful for testing)
+**IMPORTANT**: `BEEPER_BASE_URL=http://172.28.96.1:23373` is REQUIRED for this development environment. This points to the local Beeper Desktop API instance. Do not omit this or use the default endpoint.
 
 ### Running the Application
 
@@ -101,6 +101,9 @@ beeper-triage triage --dry-run
 # Include muted chats in triage
 beeper-triage triage --include-muted
 
+# Only show chats where someone else sent the last message
+beeper-triage triage --needs-reply-only
+
 # Combine options
 beeper-triage triage --max-chats 20 --no-llm --dry-run
 ```
@@ -125,7 +128,7 @@ After selecting a chat, you are prompted to choose an action:
 
 ### Key Data Structures
 
-- **BeeperChat**: Normalized chat summary with fields: `id`, `name`, `unread_count`, `last_message_ms`, `preview` (message preview with `text` and `is_sender`)
+- **BeeperChat**: Normalized chat summary with fields: `chat_id`, `title`, `unread_count`, `last_activity_ms` (timestamp of last activity), `preview_is_sender` (whether the authenticated user sent the last message), `is_muted`, `account_id`, `network_type`, `account_label`
 - **BeeperMessage**: Message data with: `id`, `text`, `sender`, `timestamp_ms`, `user_id`
 - **OpenRouterMessage**: LLM API payload with `role` and `content`
 
@@ -138,13 +141,15 @@ Custom exceptions at API boundaries:
 
 All caught and converted to `typer.BadParameter()` for user-friendly CLI output.
 
-### Chat Filtering Logic ("Needs Reply")
+### Chat Filtering and Ordering Logic
 
-A chat is included in triage if:
-1. `preview.is_sender == False` (last message is NOT from the authenticated user)
-2. Chat is not muted (unless `--include-muted` flag used)
+By default, all non-muted chats are shown. Chats are filtered based on:
+1. Muted status: Muted chats are excluded (unless `--include-muted` flag is used)
+2. Last sender (optional): When `--needs-reply-only` flag is used, only shows chats where `preview.is_sender == False` (i.e., last message is NOT from the authenticated user)
 
-This MVP filter avoids replying to your own messages and focuses on chats awaiting response.
+The `--needs-reply-only` filter focuses on chats awaiting response and avoids showing chats where you were the last to send a message.
+
+**Chat Ordering**: Chats are sorted by `last_activity_ms` in descending order (newest activity first) before being displayed in fzf. This ensures the most recently active chats appear at the top of the selection list.
 
 ### Action Choice Flow
 

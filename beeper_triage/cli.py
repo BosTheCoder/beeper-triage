@@ -15,10 +15,10 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
-from .beeper_client import BeeperClient, BeeperMessage, BeeperSDKError
+from .beeper_client import BeeperChat, BeeperClient, BeeperMessage, BeeperSDKError
 from .editor import EditorError, edit_text
 from .openrouter_client import OpenRouterClient, OpenRouterError
-from .prompts import build_prompt
+from .prompts import build_analyse_prompt, build_prompt, build_todo_prompt
 
 app = typer.Typer(add_completion=False)
 
@@ -35,12 +35,60 @@ def _ensure_fzf() -> None:
         raise typer.BadParameter("Missing dependency: fzf is not on PATH.")
 
 
-def _pick_chat_fzf(chats: list[tuple[str, str]]) -> Optional[str]:
+def _format_chat_display(
+    chat: "BeeperChat", show_account_label: bool = False
+) -> str:
+    """Format a chat for display in FZF with account and network info."""
+    parts = [chat.title]
+    if chat.network_type:
+        if show_account_label and chat.account_label:
+            # Show account label when there are multiple accounts for the same network
+            parts.append(f"[{chat.network_type} • {chat.account_label}]")
+        else:
+            parts.append(f"[{chat.network_type}]")
+    if chat.unread_count > 0:
+        parts.append(f"({chat.unread_count} new)")
+
+    # Add last activity timestamp for context
+    if chat.last_activity_ms:
+        dt = datetime.datetime.fromtimestamp(chat.last_activity_ms / 1000)
+        now = datetime.datetime.now()
+
+        # Show relative time for recent activity, absolute for older
+        delta = now - dt
+        if delta.days == 0:
+            time_str = dt.strftime("%H:%M")
+        elif delta.days == 1:
+            time_str = "yesterday"
+        elif delta.days < 7:
+            time_str = f"{delta.days}d ago"
+        else:
+            time_str = dt.strftime("%b %d")
+
+        parts.append(f"• {time_str}")
+
+    return " ".join(parts)
+
+
+def _pick_chat_fzf(chats: list["BeeperChat"]) -> Optional[str]:
     if not chats:
         return None
-    input_text = "\n".join([f"{chat_id}\t{title}" for chat_id, title in chats])
+
+    # Check if there are multiple accounts with the same network
+    network_counts: dict[str, int] = {}
+    for chat in chats:
+        if chat.network_type:
+            network_counts[chat.network_type] = network_counts.get(chat.network_type, 0) + 1
+    show_account_labels = any(count > 1 for count in network_counts.values())
+
+    input_text = "\n".join(
+        [
+            f"{chat.chat_id}\t{_format_chat_display(chat, show_account_labels)}"
+            for chat in chats
+        ]
+    )
     result = subprocess.run(
-        ["fzf", "--ansi", "--with-nth", "2..", "--prompt", "Chat> "],
+        ["fzf", "--ansi", "--with-nth", "2..", "--prompt", "Chat> ", "--tiebreak=index"],
         input=input_text,
         text=True,
         stdout=subprocess.PIPE,
@@ -259,12 +307,70 @@ def _last_message_from_others(messages: Iterable[BeeperMessage]) -> Optional[str
     return last_id
 
 
+_REPLY_GUIDANCE_OPTIONS: list[tuple[str, str]] = [
+    ("close", "Close the loop (no back-and-forth)"),
+    ("going", "Keep it going (same energy)"),
+    ("rekindle", "Rekindle the conversation"),
+    ("decline", "Soft decline (not obvious)"),
+    ("schedule", "Schedule something"),
+    ("todo", "Acknowledge + add to todo"),
+    ("analyse", "Analyse best next steps (no reply)"),
+]
+
+
+def _print_styled_section(title: str, content: str, color: str) -> None:
+    """Print a visually distinct output section with a colored border."""
+    bar = typer.style("━" * 50, fg=color)
+    typer.echo(bar)
+    typer.echo(typer.style(f"  {title}", fg=color, bold=True))
+    typer.echo(bar)
+    typer.echo(content)
+    typer.echo(bar)
+
+
+def _get_reply_guidance(messages: list[BeeperMessage], preview_count: int = 10) -> tuple[str, str]:
+    """Show recent messages and prompt for reply guidance.
+
+    Returns (guidance_key, custom_text). guidance_key is one of the predefined
+    keys, 'custom' for free-text input, or '' if skipped.
+    """
+    typer.echo("\n--- Recent messages ---")
+
+    recent = messages[-preview_count:] if len(messages) > preview_count else messages
+    for msg in recent:
+        speaker = "You" if msg.is_sender else msg.sender_name
+        text = msg.text.strip()
+        if not text:
+            continue
+        dt = datetime.datetime.fromtimestamp(msg.timestamp_ms / 1000)
+        ts = dt.strftime("%H:%M")
+        typer.echo(f"[{ts}] {speaker}: {text}")
+
+    typer.echo("\n--- Reply guidance ---")
+    for idx, (_, label) in enumerate(_REPLY_GUIDANCE_OPTIONS, start=1):
+        typer.echo(f"  [{idx}] {label}")
+    typer.echo("  Or type custom guidance, or press Enter to skip.")
+
+    try:
+        choice = input("> ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return ("", "")
+
+    if not choice:
+        return ("", "")
+    if choice.isdigit():
+        index = int(choice)
+        if 1 <= index <= len(_REPLY_GUIDANCE_OPTIONS):
+            return (_REPLY_GUIDANCE_OPTIONS[index - 1][0], "")
+    return ("custom", choice)
+
+
 @app.command()
 def triage(
     model: Optional[str] = typer.Option(
         None, "--model", help="OpenRouter model override"
     ),
-    max_chats: int = typer.Option(200, "--max-chats", min=1),
+    max_chats: int = typer.Option(2000, "--max-chats", min=1),
     max_messages: Optional[int] = typer.Option(
         None,
         "--max-messages",
@@ -277,6 +383,9 @@ def triage(
         help="Time window for messages (today, 2d, 7d, 14d, 30d, 60d, 365d, all)",
     ),
     include_muted: bool = typer.Option(False, "--include-muted"),
+    needs_reply_only: bool = typer.Option(
+        False, "--needs-reply-only", help="Only show chats where you're not the last sender"
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     no_llm: bool = typer.Option(False, "--no-llm"),
     refresh_chats: bool = typer.Option(
@@ -307,30 +416,44 @@ def triage(
         raise typer.BadParameter(str(exc)) from exc
 
     try:
+        account_map = client.list_accounts()
+    except BeeperSDKError as exc:
+        logger.exception("Failed to list accounts")
+        raise typer.BadParameter(str(exc)) from exc
+
+    try:
         chats = client.list_chats(use_cache=not refresh_chats)
     except BeeperSDKError as exc:
         logger.exception("Failed to list chats")
         raise typer.BadParameter(str(exc)) from exc
 
+    # Populate network names and account labels from account mapping (works for both cached and fresh data)
+    for chat in chats:
+        if chat.account_id and chat.account_id in account_map:
+            network_type, account_label = account_map[chat.account_id]
+            chat.network_type = network_type
+            chat.account_label = account_label
+
     filtered = []
     for chat in chats:
         if not include_muted and chat.is_muted:
             continue
-        if _needs_reply(chat.preview_is_sender):
-            filtered.append(chat)
+        if needs_reply_only and not _needs_reply(chat.preview_is_sender):
+            continue
+        filtered.append(chat)
 
+    # Truncate to max_chats (Beeper already returns chats sorted by last activity)
     filtered = filtered[:max_chats]
 
     if not filtered:
         typer.echo("No chats need reply.")
         raise typer.Exit(code=0)
 
-    chat_choices = [(c.chat_id, c.title) for c in filtered]
-    selection = _pick_chat_fzf(chat_choices)
+    selection = _pick_chat_fzf(filtered)
     if not selection:
         typer.echo("No chat selected.")
         raise typer.Exit(code=0)
-    chat_title = next((title for chat_id, title in chat_choices if chat_id == selection), "")
+    chat_title = next((chat.title for chat in filtered if chat.chat_id == selection), "")
 
     if message_window is None:
         window_key = _pick_message_window()
@@ -387,6 +510,8 @@ def triage(
         raise typer.Exit(code=0)
 
     # action == "reply" — existing flow continues
+    guidance_key, custom_guidance = _get_reply_guidance(messages_sorted)
+
     if not no_llm:
         if not model:
             model = default_model
@@ -394,13 +519,47 @@ def triage(
             raise typer.BadParameter("OPENROUTER_MODEL or --model is required.")
         _require_env("OPENROUTER_API_KEY")
 
-    if no_llm:
+    # --- Analyse: LLM-only, no reply ---
+    if guidance_key == "analyse":
+        if no_llm:
+            typer.echo("LLM is disabled (--no-llm). Cannot analyse.")
+            raise typer.Exit(code=0)
+        openrouter = OpenRouterClient(api_key=_require_env("OPENROUTER_API_KEY"))
+        try:
+            analysis = openrouter.create_chat_completion(
+                model=model, messages=build_analyse_prompt(transcript)
+            )
+        except OpenRouterError as exc:
+            logger.exception("Failed to create analysis via OpenRouter")
+            raise typer.BadParameter(str(exc)) from exc
+        _print_styled_section("NEXT STEPS ANALYSIS", analysis, typer.colors.CYAN)
+        raise typer.Exit(code=0)
+
+    # --- Todo: LLM generates reply + todo item ---
+    todo_text: str = ""
+    if guidance_key == "todo":
+        if not no_llm:
+            openrouter = OpenRouterClient(api_key=_require_env("OPENROUTER_API_KEY"))
+            try:
+                todo_output = openrouter.create_chat_completion(
+                    model=model, messages=build_todo_prompt(transcript)
+                )
+            except OpenRouterError as exc:
+                logger.exception("Failed to create todo via OpenRouter")
+                raise typer.BadParameter(str(exc)) from exc
+            parts = todo_output.split("---", 1)
+            draft = parts[0].strip()
+            todo_text = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            draft = ""
+    elif no_llm:
         draft = ""
     else:
         openrouter = OpenRouterClient(api_key=_require_env("OPENROUTER_API_KEY"))
         try:
             draft = openrouter.create_chat_completion(
-                model=model, messages=build_prompt(transcript)
+                model=model,
+                messages=build_prompt(transcript, guidance_key=guidance_key, user_guidance=custom_guidance),
             )
         except OpenRouterError as exc:
             logger.exception("Failed to create chat completion via OpenRouter")
@@ -415,6 +574,9 @@ def triage(
     if not edited:
         typer.echo("Empty message, aborting.")
         raise typer.Exit(code=0)
+
+    if todo_text:
+        _print_styled_section("TODO ITEM", todo_text, typer.colors.YELLOW)
 
     typer.echo("\nDraft reply:\n")
     typer.echo(edited)

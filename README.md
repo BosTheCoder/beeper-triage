@@ -16,10 +16,13 @@ pip install typer python-dotenv requests beeper_desktop_api
 
 ```env
 BEEPER_ACCESS_TOKEN=your_beeper_token
+BEEPER_BASE_URL=http://172.28.96.1:23373
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
 EDITOR=vim
 ```
+
+**Note**: `BEEPER_BASE_URL` points to the local Beeper Desktop API instance and is required for this setup.
 
 3) Run:
 

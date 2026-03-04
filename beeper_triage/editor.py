@@ -24,7 +24,12 @@ def edit_text(initial_text: str, editor: str) -> str:
         handle.flush()
 
     try:
-        subprocess.run([editor, path], check=True)
+        editor_bin = os.path.basename(editor).lower().removesuffix(".exe")
+        if editor_bin in {"code", "code-insiders", "codium", "cursor"}:
+            cmd = [editor, "--wait", path]
+        else:
+            cmd = [editor, path]
+        subprocess.run(cmd, check=True)
     except FileNotFoundError as exc:
         raise EditorError(f"Editor not found: {editor}") from exc
     except subprocess.CalledProcessError as exc:

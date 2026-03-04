@@ -19,3 +19,8 @@ dependencies = [
 
 [project.scripts]
 beeper-triage = "beeper_triage.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["beeper_triage*"]
+exclude = ["exports*"]

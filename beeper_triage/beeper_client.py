@@ -33,6 +33,10 @@ class BeeperChat:
     unread_count: int
     preview_is_sender: bool
     is_muted: bool
+    last_activity_ms: int = 0  # Timestamp of last activity in milliseconds
+    account_id: Optional[str] = None
+    network_type: Optional[str] = None
+    account_label: Optional[str] = None  # User-friendly account identifier
 
 
 class BeeperClient:
@@ -88,6 +92,10 @@ class BeeperClient:
                         "unread_count": chat.unread_count,
                         "preview_is_sender": chat.preview_is_sender,
                         "is_muted": chat.is_muted,
+                        "last_activity_ms": chat.last_activity_ms,
+                        "account_id": chat.account_id,
+                        "network_type": chat.network_type,
+                        "account_label": chat.account_label,
                     }
                     for chat in chats
                 ],
@@ -124,12 +132,49 @@ class BeeperClient:
                 preview_is_sender = bool(
                     self._get_attr(preview, "is_sender", default=False)
                 )
+            account_id = self._get_attr(chat, "accountID", "account_id", default=None)
+            if account_id:
+                account_id = str(account_id)
+
+            # Extract last_activity timestamp
+            last_activity = self._get_attr(chat, "last_activity", "lastActivity", default=None)
+            last_activity_ms = 0
+            if last_activity is not None:
+                if isinstance(last_activity, datetime.datetime):
+                    last_activity_ms = int(last_activity.timestamp() * 1000)
+                elif isinstance(last_activity, (int, float)):
+                    last_activity_ms = int(last_activity)
+
+            # Extract and enrich title for 1:1 chats
+            title = str(
+                self._get_attr(chat, "title", "name", default="(no title)")
+            )
+            chat_type = self._get_attr(chat, "type", default=None)
+
+            # For 1:1 chats, try to get the other participant's name if title seems wrong
+            if chat_type == "single":
+                participants_obj = self._get_attr(chat, "participants", default=None)
+                if participants_obj is not None:
+                    items = self._get_attr(participants_obj, "items", default=None)
+                    if items:
+                        # Find the participant who is not the user
+                        for participant in items:
+                            is_self = self._get_attr(participant, "is_self", "isSelf", default=False)
+                            if not is_self:
+                                other_name = self._get_attr(
+                                    participant,
+                                    "full_name",
+                                    "fullName",
+                                    default=None
+                                )
+                                if other_name and other_name.strip():
+                                    title = str(other_name)
+                                    break
+
             results.append(
                 BeeperChat(
                     chat_id=str(self._get_attr(chat, "chat_id", "id")),
-                    title=str(
-                        self._get_attr(chat, "title", "name", default="(no title)")
-                    ),
+                    title=title,
                     unread_count=int(
                         self._get_attr(chat, "unread_count", default=0) or 0
                     ),
@@ -137,11 +182,65 @@ class BeeperClient:
                     is_muted=bool(
                         self._get_attr(chat, "is_muted", "muted", default=False)
                     ),
+                    last_activity_ms=last_activity_ms,
+                    account_id=account_id,
+                    network_type=None,  # Will be populated in CLI from account mapping
                 )
             )
 
         self._save_cache(results)
         return results
+
+    def list_accounts(self) -> dict[str, tuple[str, str]]:
+        """Get mapping of account_id -> (network name, account label)."""
+        try:
+            accounts = self._client.accounts.list()
+            mapping: dict[str, tuple[str, str]] = {}
+            for account in accounts:
+                account_id = self._get_attr(account, "account_id", "accountID")
+                network = self._get_attr(account, "network")
+                if account_id and network:
+                    # Try to get a user-friendly label from various fields
+                    user_obj = self._get_attr(account, "user")
+
+                    # Build a label from available fields
+                    label_parts = []
+
+                    # Extract useful fields from User object if present
+                    if user_obj:
+                        # Try to get human-readable name
+                        full_name = self._get_attr(user_obj, "full_name", default="")
+                        username = self._get_attr(user_obj, "username", default="")
+                        phone = self._get_attr(user_obj, "phone_number", default="")
+                        email = self._get_attr(user_obj, "email", default="")
+
+                        # Prefer full_name, fall back to username
+                        if full_name and full_name.strip():
+                            label_parts.append(full_name.strip())
+                        elif username and username.strip():
+                            # For Matrix usernames, strip the domain part
+                            clean_username = username.split(":")[0].strip()
+                            label_parts.append(clean_username)
+
+                        # Add phone if available and not already in the name
+                        if phone and phone.strip():
+                            phone_str = phone.strip()
+                            if not label_parts or phone_str not in " ".join(label_parts):
+                                label_parts.append(phone_str)
+
+                        # Add email as fallback if we have nothing else
+                        if not label_parts and email and email.strip():
+                            label_parts.append(email.strip())
+
+                    # If we still have no label, use last 8 chars of account ID
+                    label = " • ".join(label_parts) if label_parts else str(account_id)[-8:]
+
+                    mapping[str(account_id)] = (str(network), label)
+            return mapping
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to list accounts via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
 
     def get_chat(self, chat_id: str) -> Any:
         try:
