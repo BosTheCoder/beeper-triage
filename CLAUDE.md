@@ -34,7 +34,7 @@ beeper-triage/
 
 ### Key Modules
 
-- **cli.py**: Entry point (`beeper-triage triage`). Orchestrates the full workflow: chat filtering, selection, message fetching, action choice (reply or copy to clipboard), LLM generation, editing, and sending. Includes helpers for clipboard detection (`_detect_clipboard_cmd()`), transcript formatting with timestamps (`_format_transcript_with_timestamps()`), and clipboard copy (`_copy_to_clipboard()`). Custom exceptions (BeeperSDKError, OpenRouterError, EditorError) converted to user-friendly CLI errors.
+- **cli.py**: Entry point (`beeper-triage`). Orchestrates the full workflow: chat filtering, selection, message fetching, action choice (reply or copy to clipboard), LLM generation, editing, and sending. Includes helpers for clipboard detection (`_detect_clipboard_cmd()`), transcript formatting with timestamps (`_format_transcript_with_timestamps()`), and clipboard copy (`_copy_to_clipboard()`). Custom exceptions (BeeperSDKError, OpenRouterError, EditorError) converted to user-friendly CLI errors.
 
 - **beeper_client.py**: Wrapper around the official `beeper_desktop_api` SDK. Provides `list_chats()` and `list_messages()` methods with normalized response handling via `BeeperChat` and `BeeperMessage` dataclasses. Includes resilient attribute extraction (`_get_attr()`) to handle API schema variations.
 
@@ -66,46 +66,48 @@ Create `.env` file with required variables:
 
 ```env
 BEEPER_ACCESS_TOKEN=your_beeper_token
-BEEPER_BASE_URL=http://172.28.96.1:23373
+BEEPER_BASE_URL=http://172.28.96.1:23374
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
 EDITOR=vim
 ```
 
-**IMPORTANT**: `BEEPER_BASE_URL=http://172.28.96.1:23373` is REQUIRED for this development environment. This points to the local Beeper Desktop API instance. Do not omit this or use the default endpoint.
+**IMPORTANT**: `BEEPER_BASE_URL=http://172.28.96.1:23374` is REQUIRED for this development environment. This points to the local Beeper Desktop API instance. Do not omit this or use the default endpoint.
 
 ### Running the Application
 
+The CLI is a single-command tool — no subcommand needed. Just run:
+
 ```bash
 # Basic usage - triage chats needing replies
-beeper-triage triage
+beeper-triage
 
-# Or via module directly
-python -m beeper_triage.cli triage
+# Or via module directly (without installing the package)
+python -m beeper_triage.cli
 
 # Limit number of chats to consider
-beeper-triage triage --max-chats 30
+beeper-triage --max-chats 30
 
 # Fetch more message history per chat
-beeper-triage triage --max-messages 40
+beeper-triage --max-messages 40
 
 # Override the default LLM model
-beeper-triage triage --model openai/gpt-4o-mini
+beeper-triage --model openai/gpt-4o-mini
 
 # Skip LLM generation (review chats without AI draft)
-beeper-triage triage --no-llm
+beeper-triage --no-llm
 
 # Dry-run mode (show draft without sending)
-beeper-triage triage --dry-run
+beeper-triage --dry-run
 
 # Include muted chats in triage
-beeper-triage triage --include-muted
+beeper-triage --include-muted
 
 # Only show chats where someone else sent the last message
-beeper-triage triage --needs-reply-only
+beeper-triage --needs-reply-only
 
 # Combine options
-beeper-triage triage --max-chats 20 --no-llm --dry-run
+beeper-triage --max-chats 20 --no-llm --dry-run
 ```
 
 After selecting a chat, you are prompted to choose an action:
@@ -237,12 +239,12 @@ Check `.env` file values first (ensure `BEEPER_ACCESS_TOKEN` and `OPENROUTER_API
 
 Use `--dry-run` flag to preview drafts without sending:
 ```bash
-beeper-triage triage --max-chats 5 --dry-run
+beeper-triage --max-chats 5 --dry-run
 ```
 
 Use `--no-llm` to skip LLM generation and test the chat selection flow alone:
 ```bash
-beeper-triage triage --no-llm
+beeper-triage --no-llm
 ```
 
 ## Notes for Future Development
