@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
+import time
+from dataclasses import asdict
 from typing import Iterable, Optional
 
 import typer
@@ -365,6 +369,84 @@ def _get_reply_guidance(messages: list[BeeperMessage], preview_count: int = 10) 
     return ("custom", choice)
 
 
+# --- Proxy auto-start ---
+
+# Windows host IP from WSL and candidate ports
+_WSL_HOST_IP = "172.28.96.1"
+_PROXY_PORTS = [23374, 23373]
+_PROXY_SCRIPT_WSL = os.path.expanduser(
+    "~/projects/personal/beeper-wsl-proxy/beeper_wsl_proxy.py"
+)
+
+
+def _probe_proxy_port() -> Optional[int]:
+    """Try each candidate port on the Windows host. Return the first that responds."""
+    for port in _PROXY_PORTS:
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            sock.connect((_WSL_HOST_IP, port))
+            sock.close()
+            return port
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            continue
+    return None
+
+
+def _start_proxy_via_powershell() -> bool:
+    """Launch the WSL proxy on Windows via PowerShell and wait for it to come up."""
+    powershell = shutil.which("powershell.exe")
+    if not powershell:
+        return False
+
+    # Convert WSL path to Windows path
+    try:
+        win_path = subprocess.check_output(
+            ["wslpath", "-w", _PROXY_SCRIPT_WSL], text=True
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+    # Launch proxy in a hidden PowerShell window so it persists after we exit
+    try:
+        subprocess.Popen(
+            [
+                powershell,
+                "-Command",
+                f'Start-Process python -ArgumentList \'"{win_path}"\' -WindowStyle Hidden',
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+
+    # Wait for the proxy to come up (up to 8 seconds)
+    for _ in range(16):
+        time.sleep(0.5)
+        if _probe_proxy_port() is not None:
+            return True
+    return False
+
+
+def _ensure_proxy() -> str:
+    """Return BEEPER_BASE_URL with an active proxy port, starting the proxy if needed."""
+    port = _probe_proxy_port()
+    if port:
+        return f"http://{_WSL_HOST_IP}:{port}"
+
+    typer.echo("[*] Proxy not running — starting via PowerShell ...")
+    if _start_proxy_via_powershell():
+        port = _probe_proxy_port()
+        if port:
+            typer.echo(f"[+] Proxy started on port {port}")
+            return f"http://{_WSL_HOST_IP}:{port}"
+
+    typer.echo("[!] Could not start proxy. Start it manually in PowerShell:")
+    typer.echo(f"    python {_PROXY_SCRIPT_WSL}")
+    raise typer.Exit(code=1)
+
+
 @app.command()
 def triage(
     model: Optional[str] = typer.Option(
@@ -391,6 +473,24 @@ def triage(
     refresh_chats: bool = typer.Option(
         False, "--refresh-chats", help="Force refresh chat cache (bypasses 6-hour TTL)"
     ),
+    agent: bool = typer.Option(
+        False, "--agent", help="Non-interactive agent mode: JSON output, no prompts"
+    ),
+    chat_id: Optional[str] = typer.Option(
+        None, "--chat-id", help="Select chat by ID (agent mode: required to proceed past chat list)"
+    ),
+    action: Optional[str] = typer.Option(
+        None, "--action", help="Action to take: reply, copy, export (skips interactive prompt)"
+    ),
+    guidance: Optional[str] = typer.Option(
+        None, "--guidance", help="Reply guidance: preset key (close/going/rekindle/decline/schedule/todo/analyse) or free text"
+    ),
+    no_edit: bool = typer.Option(
+        False, "--no-edit", help="Skip editor step and use draft as-is"
+    ),
+    draft_override: Optional[str] = typer.Option(
+        None, "--draft", help="Override LLM output with this text (implies --no-edit)"
+    ),
 ) -> None:
     """Triage Beeper chats and draft a reply."""
 
@@ -401,13 +501,28 @@ def triage(
 
     load_dotenv()
 
-    _ensure_fzf()
+    if not agent:
+        _ensure_fzf()
 
     access_token = _require_env("BEEPER_ACCESS_TOKEN")
     default_model = os.getenv("OPENROUTER_MODEL", "")
     editor = os.getenv("EDITOR", "")
 
     base_url = os.getenv("BEEPER_BASE_URL")
+    if not base_url:
+        base_url = _ensure_proxy()
+    else:
+        # Even with a configured URL, verify the proxy is reachable; if not, auto-detect port
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(base_url)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            sock.connect((parsed.hostname, parsed.port))
+            sock.close()
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            typer.echo(f"[!] Configured proxy at {base_url} not reachable — auto-detecting ...")
+            base_url = _ensure_proxy()
 
     try:
         client = BeeperClient(access_token=access_token, base_url=base_url)
@@ -446,20 +561,53 @@ def triage(
     filtered = filtered[:max_chats]
 
     if not filtered:
-        typer.echo("No chats need reply.")
+        if agent:
+            typer.echo(json.dumps({"chats": []}))
+        else:
+            typer.echo("No chats need reply.")
         raise typer.Exit(code=0)
 
-    selection = _pick_chat_fzf(filtered)
-    if not selection:
-        typer.echo("No chat selected.")
+    # In agent mode without --chat-id: dump chat list as JSON and exit
+    if agent and not chat_id:
+        chat_list = [
+            {
+                "chat_id": c.chat_id,
+                "title": c.title,
+                "unread_count": c.unread_count,
+                "last_activity_ms": c.last_activity_ms,
+                "preview_is_sender": c.preview_is_sender,
+                "is_muted": c.is_muted,
+                "network_type": c.network_type,
+                "account_label": c.account_label,
+            }
+            for c in filtered
+        ]
+        typer.echo(json.dumps({"chats": chat_list}))
         raise typer.Exit(code=0)
+
+    if chat_id:
+        selection = chat_id
+        if not any(c.chat_id == chat_id for c in filtered):
+            if agent:
+                typer.echo(json.dumps({"error": f"chat_id not found: {chat_id}"}))
+            else:
+                typer.echo(f"Chat ID not found: {chat_id}")
+            raise typer.Exit(code=1)
+    else:
+        selection = _pick_chat_fzf(filtered)
+        if not selection:
+            typer.echo("No chat selected.")
+            raise typer.Exit(code=0)
     chat_title = next((chat.title for chat in filtered if chat.chat_id == selection), "")
 
     if message_window is None:
-        window_key = _pick_message_window()
-        if window_key is None:
-            typer.echo("Cancelled.")
-            raise typer.Exit(code=0)
+        if agent:
+            window_key = "7d"
+        else:
+            window_key = _pick_message_window()
+            if window_key is None:
+                typer.echo("Cancelled.")
+                raise typer.Exit(code=0)
     else:
         window_key = _normalize_message_window(message_window)
     since_ms = _message_window_since_ms(window_key)
@@ -483,34 +631,63 @@ def triage(
 
     reply_to_id = _last_message_from_others(messages_sorted)
 
-    action = _pick_action()
-    if action is None:
-        typer.echo("Cancelled.")
-        raise typer.Exit(code=0)
+    if action is not None:
+        resolved_action = action.lower()
+        if resolved_action not in ("reply", "copy", "export"):
+            if agent:
+                typer.echo(json.dumps({"error": f"Invalid action: {action}. Use reply, copy, or export."}))
+            else:
+                typer.echo(f"Invalid action: {action}. Use reply, copy, or export.")
+            raise typer.Exit(code=1)
+    elif agent:
+        typer.echo(json.dumps({"error": "Agent mode requires --action (reply, copy, or export)."}))
+        raise typer.Exit(code=1)
+    else:
+        resolved_action = _pick_action()
+        if resolved_action is None:
+            typer.echo("Cancelled.")
+            raise typer.Exit(code=0)
 
-    if action == "copy":
+    if resolved_action == "copy":
         clipboard_cmd = _detect_clipboard_cmd()
         if clipboard_cmd is None:
-            typer.echo(
-                "No clipboard tool found. Install one of: clip.exe (WSL), wl-copy, xclip, xsel"
-            )
+            msg = "No clipboard tool found. Install one of: clip.exe (WSL), wl-copy, xclip, xsel"
+            if agent:
+                typer.echo(json.dumps({"error": msg}))
+            else:
+                typer.echo(msg)
             raise typer.Exit(code=1)
         timestamped = _format_transcript_with_timestamps(messages_sorted)
         try:
             _copy_to_clipboard(timestamped, clipboard_cmd)
         except subprocess.CalledProcessError as exc:
             raise typer.BadParameter(f"Clipboard copy failed: {exc}") from exc
-        typer.echo("Transcript copied to clipboard.")
+        if agent:
+            typer.echo(json.dumps({"status": "copied", "chat_id": selection}))
+        else:
+            typer.echo("Transcript copied to clipboard.")
         raise typer.Exit(code=0)
 
-    if action == "export":
+    if resolved_action == "export":
         timestamped = _format_transcript_with_timestamps(messages_sorted)
         export_path = _export_transcript(timestamped, chat_title)
-        typer.echo(f"Exported transcript to: {export_path}")
+        if agent:
+            typer.echo(json.dumps({"status": "exported", "chat_id": selection, "path": export_path}))
+        else:
+            typer.echo(f"Exported transcript to: {export_path}")
         raise typer.Exit(code=0)
 
-    # action == "reply" — existing flow continues
-    guidance_key, custom_guidance = _get_reply_guidance(messages_sorted)
+    # resolved_action == "reply" — existing flow continues
+    if guidance is not None:
+        preset_keys = [key for key, _ in _REPLY_GUIDANCE_OPTIONS]
+        if guidance in preset_keys:
+            guidance_key, custom_guidance = guidance, ""
+        else:
+            guidance_key, custom_guidance = "custom", guidance
+    elif agent:
+        guidance_key, custom_guidance = "", ""
+    else:
+        guidance_key, custom_guidance = _get_reply_guidance(messages_sorted)
 
     if not no_llm:
         if not model:
@@ -522,7 +699,10 @@ def triage(
     # --- Analyse: LLM-only, no reply ---
     if guidance_key == "analyse":
         if no_llm:
-            typer.echo("LLM is disabled (--no-llm). Cannot analyse.")
+            if agent:
+                typer.echo(json.dumps({"error": "LLM is disabled (--no-llm). Cannot analyse."}))
+            else:
+                typer.echo("LLM is disabled (--no-llm). Cannot analyse.")
             raise typer.Exit(code=0)
         openrouter = OpenRouterClient(api_key=_require_env("OPENROUTER_API_KEY"))
         try:
@@ -532,12 +712,17 @@ def triage(
         except OpenRouterError as exc:
             logger.exception("Failed to create analysis via OpenRouter")
             raise typer.BadParameter(str(exc)) from exc
-        _print_styled_section("NEXT STEPS ANALYSIS", analysis, typer.colors.CYAN)
+        if agent:
+            typer.echo(json.dumps({"status": "analysis", "chat_id": selection, "analysis": analysis}))
+        else:
+            _print_styled_section("NEXT STEPS ANALYSIS", analysis, typer.colors.CYAN)
         raise typer.Exit(code=0)
 
     # --- Todo: LLM generates reply + todo item ---
     todo_text: str = ""
-    if guidance_key == "todo":
+    if draft_override is not None:
+        draft = draft_override
+    elif guidance_key == "todo":
         if not no_llm:
             openrouter = OpenRouterClient(api_key=_require_env("OPENROUTER_API_KEY"))
             try:
@@ -565,29 +750,51 @@ def triage(
             logger.exception("Failed to create chat completion via OpenRouter")
             raise typer.BadParameter(str(exc)) from exc
 
-    try:
-        edited = edit_text(draft, editor=editor)
-    except EditorError as exc:
-        logger.exception("Editor error")
-        raise typer.BadParameter(str(exc)) from exc
+    if no_edit or agent or draft_override is not None:
+        edited = draft
+    else:
+        try:
+            edited = edit_text(draft, editor=editor)
+        except EditorError as exc:
+            logger.exception("Editor error")
+            raise typer.BadParameter(str(exc)) from exc
 
     if not edited:
-        typer.echo("Empty message, aborting.")
+        if agent:
+            typer.echo(json.dumps({"error": "Empty message, aborting."}))
+        else:
+            typer.echo("Empty message, aborting.")
         raise typer.Exit(code=0)
 
-    if todo_text:
-        _print_styled_section("TODO ITEM", todo_text, typer.colors.YELLOW)
+    if agent:
+        # In agent mode, skip confirmation unless dry_run
+        if dry_run:
+            result: dict = {"status": "dry_run", "chat_id": selection, "draft": edited}
+            if todo_text:
+                result["todo"] = todo_text
+            typer.echo(json.dumps(result))
+            raise typer.Exit(code=0)
+        # Fall through to send
+    else:
+        if todo_text:
+            _print_styled_section("TODO ITEM", todo_text, typer.colors.YELLOW)
 
-    typer.echo("\nDraft reply:\n")
-    typer.echo(edited)
+        typer.echo("\nDraft reply:\n")
+        typer.echo(edited)
 
-    confirm = typer.confirm("\nSend this message?", default=False)
-    if not confirm:
-        typer.echo("Cancelled.")
-        raise typer.Exit(code=0)
+        confirm = typer.confirm("\nSend this message?", default=False)
+        if not confirm:
+            typer.echo("Cancelled.")
+            raise typer.Exit(code=0)
 
     if dry_run:
-        typer.echo("Dry run enabled. Not sending.")
+        if agent:
+            result = {"status": "dry_run", "chat_id": selection, "draft": edited}
+            if todo_text:
+                result["todo"] = todo_text
+            typer.echo(json.dumps(result))
+        else:
+            typer.echo("Dry run enabled. Not sending.")
         raise typer.Exit(code=0)
 
     try:
@@ -596,7 +803,13 @@ def triage(
         logger.exception("Failed to send message")
         raise typer.BadParameter(str(exc)) from exc
 
-    typer.echo("Message sent.")
+    if agent:
+        result = {"status": "sent", "chat_id": selection, "message": edited}
+        if todo_text:
+            result["todo"] = todo_text
+        typer.echo(json.dumps(result))
+    else:
+        typer.echo("Message sent.")
 
 
 if __name__ == "__main__":

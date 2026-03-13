@@ -16,7 +16,7 @@ pip install typer python-dotenv requests beeper_desktop_api
 
 ```env
 BEEPER_ACCESS_TOKEN=your_beeper_token
-BEEPER_BASE_URL=http://172.28.96.1:23373
+BEEPER_BASE_URL=http://172.28.96.1:23374
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
 EDITOR=vim
@@ -27,16 +27,18 @@ EDITOR=vim
 3) Run:
 
 ```bash
-python -m beeper_triage.cli triage
+beeper-triage
+# or without installing the package:
+python -m beeper_triage.cli
 ```
 
 ## Examples
 
 ```bash
-python -m beeper_triage.cli triage --max-chats 30 --max-messages 40
-python -m beeper_triage.cli triage --message-window 7d
-python -m beeper_triage.cli triage --model openai/gpt-4o-mini
-python -m beeper_triage.cli triage --no-llm --dry-run
+beeper-triage --max-chats 30 --max-messages 40
+beeper-triage --message-window 7d
+beeper-triage --model openai/gpt-4o-mini
+beeper-triage --no-llm --dry-run
 
 After selecting a chat, the CLI prompts for a message window (today, 2d, 7d, 14d, 30d, 60d, 365d, all).
 Use `--message-window` to skip the prompt. `--max-messages` is optional; omit it to fetch the full window.
