@@ -322,15 +322,62 @@ class BeeperClient:
 
         return results
 
+    def search_contacts(self, account_id: str, query: str) -> list[dict[str, Any]]:
+        """Search contacts on a specific account (e.g. by phone number).
+
+        Returns a list of dicts with keys: id, full_name, phone_number, email,
+        username, cannot_message.
+        """
+        try:
+            result = self._client.accounts.contacts.search(account_id, query=query)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to search contacts via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+        contacts: list[dict[str, Any]] = []
+        for user in result.items:
+            contacts.append({
+                "id": user.id,
+                "full_name": getattr(user, "full_name", None),
+                "phone_number": getattr(user, "phone_number", None),
+                "email": getattr(user, "email", None),
+                "username": getattr(user, "username", None),
+                "cannot_message": getattr(user, "cannot_message", None),
+            })
+        return contacts
+
+    def create_chat(
+        self,
+        account_id: str,
+        participant_ids: list[str],
+        chat_type: str = "single",
+        message_text: Optional[str] = None,
+    ) -> str:
+        """Create a new chat and return the chat_id."""
+        try:
+            kwargs: dict[str, Any] = {
+                "account_id": account_id,
+                "participant_ids": participant_ids,
+                "type": chat_type,
+            }
+            if message_text:
+                kwargs["message_text"] = message_text
+            result = self._client.chats.create(**kwargs)
+            return result.chat_id
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to create chat via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
     def send_message(
-        self, chat_id: str, text: str, reply_to_message_id: Optional[str]
+        self, chat_id: str, text: str, reply_to_message_id: Optional[str] = None
     ) -> Any:
         try:
-            return self._client.messages.send(
-                chat_id=chat_id,
-                text=text,
-                reply_to_message_id=reply_to_message_id,
-            )
+            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+            if reply_to_message_id is not None:
+                kwargs["reply_to_message_id"] = reply_to_message_id
+            return self._client.messages.send(**kwargs)
         except Exception as exc:
             raise BeeperSDKError(
                 f"Failed to send message via SDK: {type(exc).__name__}: {str(exc)}"

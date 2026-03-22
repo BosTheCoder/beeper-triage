@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 beeper-triage = "beeper_triage.cli:app"
+beeper-proxy = "beeper_triage.wsl_proxy:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

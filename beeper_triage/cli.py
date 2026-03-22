@@ -27,6 +27,58 @@ from .prompts import build_analyse_prompt, build_prompt, build_todo_prompt
 app = typer.Typer(add_completion=False)
 
 
+_SMS_MAX_CHARS = 160
+
+# UK number patterns that cannot receive MMS (landlines, business lines).
+# Messages over 160 chars get converted to MMS which these numbers silently
+# drop.  Mobile numbers (07xx) handle long SMS fine via concatenation.
+_LANDLINE_RE = re.compile(
+    r"^\+44(?:2|3|8)\d+"  # 02x, 03x, 08x — landlines / non-geographic
+)
+
+
+def _needs_sms_split(phone: str) -> bool:
+    """Return True if *phone* (E.164) is a UK landline / non-geographic number."""
+    return bool(_LANDLINE_RE.match(phone))
+
+
+def _split_sms(text: str, limit: int = _SMS_MAX_CHARS) -> list[str]:
+    """Split *text* into chunks of at most *limit* characters.
+
+    Tries to break at sentence boundaries (`. `, `! `, `? `) first, then at
+    spaces, and only hard-splits as a last resort.  This avoids MMS conversion
+    on landline / 020 / 08xx numbers that cannot receive MMS.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    while text:
+        if len(text) <= limit:
+            chunks.append(text)
+            break
+        # Try sentence boundary
+        best = -1
+        for sep in (". ", "! ", "? "):
+            idx = text.rfind(sep, 0, limit)
+            if idx > best:
+                best = idx + len(sep)  # include the separator
+        if best > 0:
+            chunks.append(text[:best].rstrip())
+            text = text[best:].lstrip()
+            continue
+        # Try space
+        idx = text.rfind(" ", 0, limit)
+        if idx > 0:
+            chunks.append(text[:idx])
+            text = text[idx + 1:]
+            continue
+        # Hard split
+        chunks.append(text[:limit])
+        text = text[limit:]
+    return chunks
+
+
 def _require_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -374,20 +426,22 @@ def _get_reply_guidance(messages: list[BeeperMessage], preview_count: int = 10) 
 # Windows host IP from WSL and candidate ports
 _WSL_HOST_IP = "172.28.96.1"
 _PROXY_PORTS = [23374, 23373]
-_PROXY_SCRIPT_WSL = os.path.expanduser(
-    "~/projects/personal/beeper-wsl-proxy/beeper_wsl_proxy.py"
-)
+_PROXY_MODULE_PATH = os.path.join(os.path.dirname(__file__), "wsl_proxy.py")
 
 
 def _probe_proxy_port() -> Optional[int]:
-    """Try each candidate port on the Windows host. Return the first that responds."""
+    """Try each candidate port on the Windows host. Return the first that responds with a valid HTTP response."""
     for port in _PROXY_PORTS:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
+            sock.settimeout(3)
             sock.connect((_WSL_HOST_IP, port))
+            # Send a lightweight HTTP request to verify the proxy's backend is alive
+            sock.sendall(b"GET /v1/accounts HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            response = sock.recv(128)
             sock.close()
-            return port
+            if response and b"HTTP/" in response:
+                return port
         except (ConnectionRefusedError, OSError, socket.timeout):
             continue
     return None
@@ -402,7 +456,7 @@ def _start_proxy_via_powershell() -> bool:
     # Convert WSL path to Windows path
     try:
         win_path = subprocess.check_output(
-            ["wslpath", "-w", _PROXY_SCRIPT_WSL], text=True
+            ["wslpath", "-w", _PROXY_MODULE_PATH], text=True
         ).strip()
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
@@ -443,7 +497,7 @@ def _ensure_proxy() -> str:
             return f"http://{_WSL_HOST_IP}:{port}"
 
     typer.echo("[!] Could not start proxy. Start it manually in PowerShell:")
-    typer.echo(f"    python {_PROXY_SCRIPT_WSL}")
+    typer.echo(f"    python {_PROXY_MODULE_PATH}")
     raise typer.Exit(code=1)
 
 
@@ -810,6 +864,230 @@ def triage(
         typer.echo(json.dumps(result))
     else:
         typer.echo("Message sent.")
+
+
+@app.command("new-chat")
+def new_chat(
+    phone: str = typer.Option(
+        ..., "--phone", help="Phone number in E.164 format (e.g. +441234567890)"
+    ),
+    network: Optional[str] = typer.Option(
+        None, "--network", help="Network to use (e.g. whatsapp, signal, googlechat). If omitted, auto-selects or prompts."
+    ),
+    message: Optional[str] = typer.Option(
+        None, "--message", "-m", help="Message to send (if omitted, just creates the chat)"
+    ),
+    agent: bool = typer.Option(
+        False, "--agent", help="Non-interactive agent mode: JSON output, no prompts"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Start a new chat with a phone number on a specific network."""
+
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(levelname)s: %(message)s",
+    )
+
+    load_dotenv()
+
+    access_token = _require_env("BEEPER_ACCESS_TOKEN")
+
+    base_url = os.getenv("BEEPER_BASE_URL")
+    if not base_url:
+        base_url = _ensure_proxy()
+    else:
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(base_url)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            sock.connect((parsed.hostname, parsed.port))
+            sock.close()
+        except (ConnectionRefusedError, OSError, socket.timeout):
+            if not agent:
+                typer.echo(f"[!] Configured proxy at {base_url} not reachable — auto-detecting ...")
+            base_url = _ensure_proxy()
+
+    try:
+        client = BeeperClient(access_token=access_token, base_url=base_url)
+    except BeeperSDKError as exc:
+        if agent:
+            typer.echo(json.dumps({"error": str(exc)}))
+        raise typer.Exit(code=1)
+
+    # List accounts and find the right one for the requested network
+    try:
+        account_map = client.list_accounts()
+    except BeeperSDKError as exc:
+        if agent:
+            typer.echo(json.dumps({"error": str(exc)}))
+        raise typer.Exit(code=1)
+
+    # Build list of accounts with their network types
+    accounts_by_network: dict[str, list[tuple[str, str]]] = {}
+    for acct_id, (net_type, label) in account_map.items():
+        accounts_by_network.setdefault(net_type, []).append((acct_id, label))
+
+    if network:
+        # Case-insensitive network matching
+        network_lower = network.lower()
+        matched = None
+        for net_key, accts in accounts_by_network.items():
+            if net_key.lower() == network_lower:
+                matched = accts
+                break
+        if not matched:
+            available = sorted(accounts_by_network.keys())
+            err = f"No account found for network '{network}'. Available: {', '.join(available)}"
+            if agent:
+                typer.echo(json.dumps({"error": err, "available_networks": available}))
+            else:
+                typer.echo(err)
+            raise typer.Exit(code=1)
+        account_id, account_label = matched[0]
+    elif agent:
+        # Agent mode requires explicit network
+        available = sorted(accounts_by_network.keys())
+        typer.echo(json.dumps({"error": "Agent mode requires --network", "available_networks": available}))
+        raise typer.Exit(code=1)
+    else:
+        # Interactive: let user pick via fzf
+        _ensure_fzf()
+        fzf_lines = []
+        for net_type, accts in sorted(accounts_by_network.items()):
+            for acct_id, label in accts:
+                fzf_lines.append(f"{acct_id}\t{net_type} • {label}")
+        result = subprocess.run(
+            ["fzf", "--ansi", "--with-nth", "2..", "--prompt", "Network> ", "--tiebreak=index"],
+            input="\n".join(fzf_lines),
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        if result.returncode != 0:
+            typer.echo("Cancelled.")
+            raise typer.Exit(code=0)
+        line = result.stdout.strip()
+        if not line:
+            typer.echo("Cancelled.")
+            raise typer.Exit(code=0)
+        account_id = line.split("\t", 1)[0]
+        account_label = account_map[account_id][1]
+
+    # Search for the contact on that account
+    if not agent:
+        typer.echo(f"Searching for {phone} on {account_map[account_id][0]}...")
+
+    try:
+        contacts = client.search_contacts(account_id, query=phone)
+    except BeeperSDKError as exc:
+        if agent:
+            typer.echo(json.dumps({"error": str(exc)}))
+        else:
+            typer.echo(f"Contact search failed: {exc}")
+        raise typer.Exit(code=1)
+
+    if not contacts:
+        err = f"No contact found for '{phone}' on {account_map[account_id][0]}"
+        if agent:
+            typer.echo(json.dumps({"error": err}))
+        else:
+            typer.echo(err)
+        raise typer.Exit(code=1)
+
+    # Pick the contact — prefer one that can be messaged
+    contact = None
+    for c in contacts:
+        if not c.get("cannot_message"):
+            contact = c
+            break
+    if contact is None:
+        contact = contacts[0]
+
+    if contact.get("cannot_message"):
+        err = f"Contact found but cannot be messaged: {contact.get('full_name') or contact['id']}"
+        if agent:
+            typer.echo(json.dumps({"error": err, "contact": contact}))
+        else:
+            typer.echo(err)
+        raise typer.Exit(code=1)
+
+    contact_name = contact.get("full_name") or contact.get("username") or contact["id"]
+
+    if not agent:
+        typer.echo(f"Found: {contact_name} ({contact.get('phone_number', 'no phone')})")
+
+    if dry_run:
+        result_data = {
+            "status": "dry_run",
+            "contact": contact,
+            "account_id": account_id,
+            "network": account_map[account_id][0],
+        }
+        if message:
+            result_data["message"] = message
+        if agent:
+            typer.echo(json.dumps(result_data))
+        else:
+            typer.echo(f"Dry run — would create chat with {contact_name} and send: {message or '(no message)'}")
+        raise typer.Exit(code=0)
+
+    # Create the chat (message_text only used by some platforms to initialise)
+    try:
+        chat_id = client.create_chat(
+            account_id=account_id,
+            participant_ids=[contact["id"]],
+            chat_type="single",
+        )
+    except BeeperSDKError as exc:
+        if agent:
+            typer.echo(json.dumps({"error": str(exc)}))
+        else:
+            typer.echo(f"Failed to create chat: {exc}")
+        raise typer.Exit(code=1)
+
+    # Actually send the message via the messages API
+    messages_sent: list[str] = []
+    if message:
+        # Only split for UK landline/non-geographic numbers (02x, 03x, 08x)
+        # which silently drop MMS.  Mobile numbers (07x) handle long SMS fine.
+        if _needs_sms_split(phone):
+            chunks = _split_sms(message)
+        else:
+            chunks = [message]
+        for chunk in chunks:
+            try:
+                client.send_message(chat_id=chat_id, text=chunk, reply_to_message_id=None)
+                messages_sent.append(chunk)
+            except BeeperSDKError as exc:
+                if agent:
+                    typer.echo(json.dumps({
+                        "error": f"Chat created ({chat_id}) but message send failed: {exc}",
+                        "chat_id": chat_id,
+                        "messages_sent": messages_sent,
+                    }))
+                else:
+                    typer.echo(f"Chat created but message failed: {exc}")
+                raise typer.Exit(code=1)
+
+    result_data = {
+        "status": "created",
+        "chat_id": chat_id,
+        "contact": contact,
+        "network": account_map[account_id][0],
+    }
+    if messages_sent:
+        result_data["message_sent"] = message
+        result_data["chunks"] = len(messages_sent)
+
+    if agent:
+        typer.echo(json.dumps(result_data))
+    else:
+        typer.echo(f"Chat created: {chat_id}")
+        if messages_sent:
+            typer.echo(f"Message sent to {contact_name} ({len(messages_sent)} part(s)): {message}")
+        else:
+            typer.echo(f"Chat with {contact_name} is ready. Use --chat-id {chat_id} to send messages.")
 
 
 if __name__ == "__main__":
