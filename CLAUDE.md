@@ -4,267 +4,101 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**beeper-triage** is a minimal Python CLI tool that helps users triage Beeper chat messages and draft intelligent replies using OpenRouter AI models. It integrates with Beeper Desktop's API and LLM services to automate the process of responding to messages across different chat networks.
+**beeper-triage** is a Python CLI tool for triaging Beeper chat messages and drafting replies using OpenRouter LLMs. It wraps the Beeper Desktop API and supports interactive (fzf) and non-interactive (agent) modes.
 
 ### Core Workflow
 
-1. Fetch Beeper chats that need replies
-2. User selects a chat interactively via `fzf` (fuzzy finder)
-3. Retrieve full message history from the selected chat
-4. User chooses an action: **Reply** (continue to LLM draft) or **Copy to clipboard** (copy transcript and exit)
-5. Generate a draft reply using an LLM (via OpenRouter API)
-6. Open user's configured text editor to review/modify the draft
-7. Send the reply back through Beeper or preview in dry-run mode
-
-## Repository Structure
-
-```
-beeper-triage/
-├── beeper_triage/              # Main Python package
-│   ├── cli.py                  # CLI orchestration and entry point
-│   ├── beeper_client.py        # Beeper API wrapper/adapter
-│   ├── openrouter_client.py    # OpenRouter LLM API client
-│   ├── editor.py               # Text editor interface helpers
-│   ├── prompts.py              # LLM prompt construction
-│   └── __init__.py
-├── .env                        # Runtime config (secrets - not in git)
-├── pyproject.toml              # Project metadata and dependencies
-└── README.md                   # User-facing documentation
-```
-
-### Key Modules
-
-- **cli.py**: Entry point (`beeper-triage`). Orchestrates the full workflow: chat filtering, selection, message fetching, action choice (reply or copy to clipboard), LLM generation, editing, and sending. Includes helpers for clipboard detection (`_detect_clipboard_cmd()`), transcript formatting with timestamps (`_format_transcript_with_timestamps()`), and clipboard copy (`_copy_to_clipboard()`). Custom exceptions (BeeperSDKError, OpenRouterError, EditorError) converted to user-friendly CLI errors.
-
-- **beeper_client.py**: Wrapper around the official `beeper_desktop_api` SDK. Provides `list_chats()` and `list_messages()` methods with normalized response handling via `BeeperChat` and `BeeperMessage` dataclasses. Includes resilient attribute extraction (`_get_attr()`) to handle API schema variations.
-
-- **openrouter_client.py**: REST client for OpenRouter API. Handles LLM calls via `create_chat_completion()` with proper header handling and error propagation.
-
-- **editor.py**: Invokes the user's configured text editor (e.g., vim, nano) to allow message review/modification in a temporary file. Handles file creation and cleanup.
-
-- **prompts.py**: Builds system + user prompts for the LLM. Formats chat transcript and context to guide reply generation.
+1. Fetch and filter Beeper chats (muted, needs-reply, etc.)
+2. Select a chat via fzf (interactive) or `--chat-id` (agent mode)
+3. Choose a time window for message history
+4. Pick an action: **Reply** (LLM draft → editor → send), **Copy to clipboard**, or **Export to folder**
+5. For replies: optionally select reply guidance (close, rekindle, decline, schedule, todo, analyse, or custom)
+6. Review/edit draft in `$EDITOR`, then confirm and send
 
 ## Development Commands
 
-### Setup
-
 ```bash
-# Create and activate virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install in editable mode (includes all dependencies)
+# Setup
+python -m venv .venv && source .venv/bin/activate
 pip install -e .
 
-# Or install dependencies manually
-pip install typer python-dotenv requests beeper_desktop_api
+# Run
+beeper-triage                          # interactive triage
+beeper-triage --dry-run                # preview without sending
+beeper-triage --no-llm                 # skip LLM, test chat selection only
+beeper-triage new-chat --phone +44... --network whatsapp -m "Hello"
+
+# Agent mode (non-interactive, JSON output)
+beeper-triage --agent                  # list chats as JSON
+beeper-triage --agent --chat-id X --action reply --guidance close --no-edit
+
+# Tests
+pytest tests/                          # run all tests
+pytest tests/test_cli.py               # run specific test file
+pytest tests/test_cli.py::test_name    # run single test
 ```
 
-### Environment Configuration
+## Environment Configuration
 
-Create `.env` file with required variables:
-
-```env
+Required in `.env`:
+```
 BEEPER_ACCESS_TOKEN=your_beeper_token
-BEEPER_BASE_URL=http://172.28.96.1:23374
 OPENROUTER_API_KEY=your_openrouter_key
 OPENROUTER_MODEL=anthropic/claude-3.5-sonnet
 EDITOR=vim
 ```
 
-**IMPORTANT**: `BEEPER_BASE_URL=http://172.28.96.1:23374` is REQUIRED for this development environment. This points to the local Beeper Desktop API instance. Do not omit this or use the default endpoint.
+**IMPORTANT**: `BEEPER_BASE_URL=http://172.28.96.1:23374` is REQUIRED for this WSL development environment. If `BEEPER_BASE_URL` is unset or unreachable, the CLI auto-detects the proxy port or starts it via PowerShell.
 
-### Running the Application
+## Architecture
 
-The CLI is a single-command tool — no subcommand needed. Just run:
+### Two CLI Commands
 
-```bash
-# Basic usage - triage chats needing replies
-beeper-triage
+- **`triage`** (default): Full triage workflow — list chats, select, fetch messages, choose action, generate reply, send
+- **`new-chat`**: Start a new chat with a phone number on a specific network (WhatsApp, Signal, etc.)
 
-# Or via module directly (without installing the package)
-python -m beeper_triage.cli
+Both commands support `--agent` mode for non-interactive JSON I/O.
 
-# Limit number of chats to consider
-beeper-triage --max-chats 30
+### Module Responsibilities
 
-# Fetch more message history per chat
-beeper-triage --max-messages 40
+- **cli.py**: Orchestration, CLI options via typer, proxy auto-start, SMS splitting for UK landlines, transcript export. Contains both `triage()` and `new_chat()` commands.
+- **beeper_client.py**: Adapter over `beeper_desktop_api` SDK. Normalizes responses to `BeeperChat`/`BeeperMessage` dataclasses. Caches chat list to `~/.cache/beeper-triage/chats.json` (6-hour TTL). Provides `list_chats()`, `list_messages()`, `list_accounts()`, `search_contacts()`, `create_chat()`, `send_message()`.
+- **openrouter_client.py**: REST client for OpenRouter API via `requests`.
+- **prompts.py**: Builds LLM prompts. Three prompt builders: `build_prompt()` (reply), `build_todo_prompt()` (acknowledge + todo), `build_analyse_prompt()` (next steps analysis).
+- **editor.py**: Opens `$EDITOR` with a temp file for draft review.
+- **wsl_proxy.py**: TCP proxy (runs on Windows) bridging WSL IPv4 → Beeper's IPv6 loopback. Entry point: `beeper-proxy`.
 
-# Override the default LLM model
-beeper-triage --model openai/gpt-4o-mini
+### Key Design Decisions
 
-# Skip LLM generation (review chats without AI draft)
-beeper-triage --no-llm
+- **`_get_attr()` resilience pattern**: The Beeper SDK returns objects with varying field names across versions. `BeeperClient._get_attr(obj, *names, default=None)` tries multiple attribute names, enabling the adapter to survive schema changes.
+- **Proxy auto-detection**: `cli.py` probes candidate ports with an HTTP health check (not just TCP connect) to detect stale proxy processes. Falls back to launching via PowerShell.
+- **SMS splitting**: Messages to UK landlines (02x/03x/08x) are split at 160 chars to avoid silent MMS drops. Mobile numbers (07x) are sent as-is.
+- **Chat cache**: `list_chats()` caches results with a 6-hour TTL. Use `--refresh-chats` to bypass.
+- **Reply guidance**: Seven preset guidance modes affect LLM prompt construction. "analyse" and "todo" use entirely different system prompts.
 
-# Dry-run mode (show draft without sending)
-beeper-triage --dry-run
+### Reply Guidance Modes
 
-# Include muted chats in triage
-beeper-triage --include-muted
+| Key | Effect |
+|-----|--------|
+| `close` | Wrap up, no back-and-forth |
+| `going` | Match energy, keep flowing |
+| `rekindle` | Re-engage the conversation |
+| `decline` | Soft decline |
+| `schedule` | Focus on scheduling |
+| `todo` | Acknowledge + generate a todo item (split by `---`) |
+| `analyse` | LLM analysis of next steps, no reply sent |
 
-# Only show chats where someone else sent the last message
-beeper-triage --needs-reply-only
+### Agent Mode
 
-# Combine options
-beeper-triage --max-chats 20 --no-llm --dry-run
-```
-
-After selecting a chat, you are prompted to choose an action:
-- **[1] Reply** -- proceeds with the LLM draft and reply flow
-- **[2] Copy to clipboard** -- formats the transcript with timestamps and copies it to the system clipboard (supports `clip.exe` on WSL, `wl-copy`, `xclip`, `xsel`)
-
-## Architecture and Design
-
-### Design Patterns
-
-1. **Client/Service Pattern**: `BeeperClient` and `OpenRouterClient` encapsulate external API interactions with consistent error handling.
-
-2. **Adapter Pattern**: `BeeperClient` wraps the official SDK and normalizes responses to internal dataclasses (`BeeperChat`, `BeeperMessage`), handling schema variations gracefully.
-
-3. **Dataclass-Based Models**: Immutable data containers (`BeeperMessage`, `BeeperChat`, `OpenRouterMessage`) provide type safety and clarity.
-
-4. **Composition Over Inheritance**: `cli.py` composes multiple clients rather than inheriting from them.
-
-5. **CLI Framework Pattern**: Uses `typer` for declarative argument/option handling with built-in validation and help generation.
-
-### Key Data Structures
-
-- **BeeperChat**: Normalized chat summary with fields: `chat_id`, `title`, `unread_count`, `last_activity_ms` (timestamp of last activity), `preview_is_sender` (whether the authenticated user sent the last message), `is_muted`, `account_id`, `network_type`, `account_label`
-- **BeeperMessage**: Message data with: `id`, `text`, `sender`, `timestamp_ms`, `user_id`
-- **OpenRouterMessage**: LLM API payload with `role` and `content`
-
-### Error Handling
-
-Custom exceptions at API boundaries:
-- `BeeperSDKError`: Beeper API/SDK failures
-- `OpenRouterError`: LLM API failures
-- `EditorError`: Text editor invocation failures
-
-All caught and converted to `typer.BadParameter()` for user-friendly CLI output.
-
-### Chat Filtering and Ordering Logic
-
-By default, all non-muted chats are shown. Chats are filtered based on:
-1. Muted status: Muted chats are excluded (unless `--include-muted` flag is used)
-2. Last sender (optional): When `--needs-reply-only` flag is used, only shows chats where `preview.is_sender == False` (i.e., last message is NOT from the authenticated user)
-
-The `--needs-reply-only` filter focuses on chats awaiting response and avoids showing chats where you were the last to send a message.
-
-**Chat Ordering**: Chats are sorted by `last_activity_ms` in descending order (newest activity first) before being displayed in fzf. This ensures the most recently active chats appear at the top of the selection list.
-
-### Action Choice Flow
-
-After a chat is selected and messages are fetched, the user is prompted with `[1] Reply  [2] Copy to clipboard`. Choosing "copy" formats the full transcript with human-readable timestamps and pipes it to a detected clipboard command. The tool auto-detects the appropriate clipboard utility for the platform (`clip.exe` for WSL, `wl-copy` for Wayland, `xclip`/`xsel` for X11).
+When `--agent` is passed, the CLI:
+- Outputs JSON instead of human text
+- Skips fzf and interactive prompts
+- Requires `--chat-id` to proceed past chat listing
+- Requires `--action` (reply/copy/export)
+- Skips editor (`--no-edit` is implicit)
 
 ## Dependencies
 
-### Runtime
-
-- **typer** (latest): CLI framework for command-line argument/option parsing with type hints
-- **python-dotenv** (latest): Load environment variables from `.env` for secure config management
-- **requests** (latest): HTTP client for OpenRouter API calls
-- **beeper_desktop_api** (latest): Official Beeper Desktop SDK for chat and message access
-
-### Build-Time
-
-- **setuptools** (>=68): Package building
-- **wheel**: Distribution format
-
-### System
-
-- **fzf**: Fuzzy finder for interactive chat selection (required on PATH)
-- **Text editor** (vim, nano, emacs, etc.): Configured via `EDITOR` env var for message editing
-
-## Important Implementation Details
-
-### Message Timestamp Handling
-
-`BeeperMessage` timestamps are flexible and accept both:
-- Python `datetime` objects (converted to milliseconds)
-- Integer millisecond Unix timestamps (used directly)
-
-The `_get_attr()` resilience pattern in `BeeperClient` handles both and gracefully falls back to alternative field names.
-
-### Chat Ordering
-
-Messages are sorted chronologically by `timestamp_ms` before being formatted for the LLM, ensuring correct conversation context.
-
-### Temporary File Handling
-
-The editor flow creates temporary files that are properly cleaned up after editing. The edited content is read back and used as the final message draft.
-
-### API Response Resilience
-
-The Beeper SDK may return responses with slightly different field names or structures. `BeeperClient._get_attr()` provides defensive extraction:
-
-```python
-def _get_attr(obj, *names, default=None):
-    """Try multiple attribute names, return first found or default."""
-    for name in names:
-        if hasattr(obj, name):
-            return getattr(obj, name)
-    return default
-```
-
-This allows the adapter to work with API schema variations without breaking.
-
-### LLM Prompt Construction
-
-`prompts.py` builds a system prompt that establishes the AI's role and a user message containing:
-- Full formatted conversation history
-- Instruction to draft a helpful reply
-
-The LLM generates a single reply, which is then presented to the user for editing.
-
-## Common Development Workflows
-
-### Modifying Chat Selection Logic
-
-Edit the `_needs_reply()` function in `cli.py` to change the filtering criteria. Currently checks: last message sender and mute status.
-
-### Adding New CLI Options
-
-Add new parameters to the `triage()` function signature in `cli.py`. Use `typer.Option()` for customization (help text, default values, etc.).
-
-### Changing LLM Behavior
-
-Modify `prompts.py` to adjust system prompt and user message formatting. The `build_prompt()` function takes the message transcript and returns a list of `OpenRouterMessage` objects ready for API consumption.
-
-### Debugging API Calls
-
-Check `.env` file values first (ensure `BEEPER_ACCESS_TOKEN` and `OPENROUTER_API_KEY` are correct). The client classes include error handling that prints meaningful messages. Add `print()` statements in client methods or use Python debugger (`pdb`) for deeper investigation.
-
-### Testing Changes Safely
-
-Use `--dry-run` flag to preview drafts without sending:
-```bash
-beeper-triage --max-chats 5 --dry-run
-```
-
-Use `--no-llm` to skip LLM generation and test the chat selection flow alone:
-```bash
-beeper-triage --no-llm
-```
-
-## Notes for Future Development
-
-- **No test suite**: This MVP has no automated tests. Consider adding pytest for critical paths (chat filtering, message formatting).
-- **Single command structure**: Currently one command (`triage`). Future subcommands could include: `draft` (offline drafting), `templates` (message templates), `stats` (analytics).
-- **No batch processing**: Each run processes one chat. Batch/scheduled triage would require refactoring.
-- **Minimal persistence**: No message queue, retry logic, or audit trail. Failed sends are not recovered.
-- **MVP UI**: Uses fzf for selection. A TUI (Text User Interface) framework like `rich` or `textual` could enhance interactivity.
-
-## Type Hints and Code Style
-
-- **Type hints**: Comprehensive use of Python 3.10+ type hints throughout (PEP 484)
-- **Style**: Follows PEP 8 (4-space indentation, descriptive names)
-- **Docstrings**: Present on classes but sparse on functions (consider expanding for public APIs)
-- **Error handling**: Try-catch at API boundaries, custom exception classes for semantics
-
-## Security Considerations
-
-- Secrets managed via `.env` file (must not be committed to git)
-- API keys passed as Bearer tokens in `Authorization` header to OpenRouter
-- Temporary editor files created in system temp directory and cleaned up
-- No logging of sensitive data (tokens, API responses with PII)
+**Runtime**: `typer`, `python-dotenv`, `requests`, `beeper_desktop_api`
+**System**: `fzf` (interactive mode only), a text editor (`$EDITOR`)
+**Test**: `pytest`

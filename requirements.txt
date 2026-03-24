@@ -1,0 +1,4 @@
+beeper_desktop_api
+python-dotenv
+requests
+typer
