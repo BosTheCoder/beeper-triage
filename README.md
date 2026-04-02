@@ -4,14 +4,14 @@ Minimal CLI to triage Beeper chats and draft replies with OpenRouter.
 
 ## Setup
 
-1) Create a virtualenv and install deps:
+1) Install via [uv](https://docs.astral.sh/uv/):
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-# Or install as an editable package (includes CLI entry points):
-pip install -e .
+# Install globally (available from anywhere)
+uv tool install -e .
+
+# Or just run from the project directory (no install needed)
+uv run beeper-triage
 ```
 
 2) Create a `.env` file:
@@ -30,8 +30,6 @@ EDITOR=vim
 
 ```bash
 beeper-triage
-# or without installing the package:
-python -m beeper_triage.cli
 ```
 
 ## Usage
@@ -119,6 +117,44 @@ beeper-proxy
 ```
 
 The proxy auto-detects the Beeper Desktop port (23374 or 23373) and forwards traffic from `0.0.0.0` to `[::1]`.
+
+### Troubleshooting: WSL can't reach Windows host
+
+If `beeper-triage` hangs at "Proxy not running — starting via PowerShell ..." (use `-v` for verbose output), the most likely cause is **Windows Firewall blocking inbound connections from WSL2**.
+
+WSL2 uses a virtual network adapter. When your Windows network profile is set to **Public**, the firewall blocks all inbound from the WSL subnet — including to Beeper's ports. Switching to **Private** fixes it:
+
+```powershell
+# Run in an elevated PowerShell (Run as Administrator):
+Set-NetConnectionProfile -InterfaceAlias "WiFi 2" -NetworkCategory Private
+```
+
+Replace `"WiFi 2"` with your actual adapter name (check with `Get-NetConnectionProfile`).
+
+If you can't change the network profile, add a targeted firewall rule instead:
+
+```powershell
+# Run in an elevated PowerShell:
+New-NetFirewallRule -DisplayName "WSL Inbound" -Direction Inbound -Action Allow -Protocol TCP -RemoteAddress 172.16.0.0/12 -Profile Any
+```
+
+### Troubleshooting: VPN software blocking WSL-to-Windows traffic
+
+VPN clients (especially **Surfshark**, but also NordVPN, ExpressVPN, etc.) can silently break WSL2's ability to reach the Windows host — even though internet access from WSL still works fine.
+
+**Symptoms:** All proxy port probes time out, the PowerShell auto-start times out, but `powershell.exe` commands work (those use WSL interop, not TCP/IP).
+
+**Why this happens:** WSL2 runs in a Hyper-V VM with a virtual network switch. Traffic from WSL to the internet goes through NAT at the hypervisor level and never needs to reach a port on the Windows host. But traffic from WSL *to* the Windows host (like the Beeper proxy on `172.x.x.x:23374`) must be accepted by the host's firewall. VPN clients like Surfshark install **Hyper-V firewall rules** (e.g. "Block All IPv6" with address range `::-ffff:ffff:...`) and WireGuard tunnel adapters that interfere with this path. The Hyper-V firewall sits between WSL and Windows — below the regular Windows Firewall — so standard firewall allow-rules don't help.
+
+**Fix:** Disconnect or disable the VPN, then retry. If you need the VPN active, check if your VPN client has a split-tunnelling option to exclude local/LAN traffic, or remove the offending Hyper-V firewall rules:
+
+```powershell
+# Check for VPN-added Hyper-V firewall rules:
+Get-NetFirewallHyperVRule | Where-Object { $_.Enabled -eq 'True' -and $_.Action -eq 'Block' } | Select-Object DisplayName, Direction, RemoteAddresses
+
+# Remove a specific rule (e.g. Surfshark):
+Get-NetFirewallHyperVRule | Where-Object { $_.DisplayName -like '*Surfshark*' } | Remove-NetFirewallHyperVRule
+```
 
 ## Notes
 

@@ -18,9 +18,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Development Commands
 
 ```bash
-# Setup
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
+# Setup (install globally, editable)
+uv tool install -e .
+
+# Run from project directory (no install needed)
+uv run beeper-triage
 
 # Run
 beeper-triage                          # interactive triage
@@ -33,9 +35,9 @@ beeper-triage --agent                  # list chats as JSON
 beeper-triage --agent --chat-id X --action reply --guidance close --no-edit
 
 # Tests
-pytest tests/                          # run all tests
-pytest tests/test_cli.py               # run specific test file
-pytest tests/test_cli.py::test_name    # run single test
+uv run pytest tests/                   # run all tests
+uv run pytest tests/test_cli.py        # run specific test file
+uv run pytest tests/test_cli.py::test_name  # run single test
 ```
 
 ## Environment Configuration
