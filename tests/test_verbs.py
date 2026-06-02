@@ -74,3 +74,29 @@ def test_react_command_error(monkeypatch):
     result = runner.invoke(app, ["react", "!chat", "$msg", "👍", "--json"])
     assert result.exit_code == 1
     assert "error" in json.loads(result.stdout)
+
+
+def test_start_command_phone(monkeypatch):
+    fake = MagicMock()
+    fake.start_chat.return_value = MagicMock(chat_id="!new")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(
+        app, ["start", "acct1", "--phone", "+15551234567", "--text", "hi", "--json"]
+    )
+    assert result.exit_code == 0
+    fake.start_chat.assert_called_once_with(
+        "acct1", user={"phone_number": "+15551234567"}, message_text="hi"
+    )
+    assert json.loads(result.stdout)["chatID"] == "!new"
+
+
+def test_start_command_requires_one_identifier(monkeypatch):
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: MagicMock())
+    result = runner.invoke(app, ["start", "acct1", "--json"])
+    assert result.exit_code != 0
+
+
+def test_start_command_rejects_two_identifiers(monkeypatch):
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: MagicMock())
+    result = runner.invoke(app, ["start", "acct1", "--phone", "+1", "--username", "alice", "--json"])
+    assert result.exit_code != 0

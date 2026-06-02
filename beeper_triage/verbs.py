@@ -82,8 +82,41 @@ def _react(
     )
 
 
+def _start(
+    account_id: str = typer.Argument(..., help="Account ID to start the chat on."),
+    phone: Optional[str] = typer.Option(None, "--phone", help="Recipient phone number."),
+    username: Optional[str] = typer.Option(None, "--username", help="Recipient username."),
+    email: Optional[str] = typer.Option(None, "--email", help="Recipient email."),
+    user_id: Optional[str] = typer.Option(None, "--user-id", help="Recipient user ID."),
+    text: Optional[str] = typer.Option(None, "--text", help="Optional first message."),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Start a new direct chat with someone you haven't messaged before."""
+    eff_json = resolve_json_flag(agent, json_)
+    identifiers = {"phone_number": phone, "username": username, "email": email, "id": user_id}
+    provided = {k: v for k, v in identifiers.items() if v}
+    if len(provided) != 1:
+        emit(
+            {"error": "Provide exactly one recipient identifier (--phone/--username/--email/--user-id)."},
+            json_flag=eff_json,
+            human="Provide exactly one recipient identifier (--phone/--username/--email/--user-id).",
+        )
+        raise typer.Exit(code=2)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        result = client.start_chat(account_id, user=provided, message_text=text)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    chat_id = getattr(result, "chat_id", None) or getattr(result, "chatID", None)
+    emit({"chatID": chat_id, "accountID": account_id, "status": "started"},
+         json_flag=eff_json, human=f"Started chat {chat_id}.")
+
+
 def register(app: typer.Typer) -> None:
     """Attach the Tier-1 verb commands to the given Typer app."""
     app.command("mark-read")(_mark_read)
     app.command("mark-unread")(_mark_unread)
     app.command("react")(_react)
+    app.command("start")(_start)

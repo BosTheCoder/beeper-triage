@@ -418,3 +418,16 @@ class BeeperClient:
             raise BeeperSDKError(
                 f"Failed to remove reaction via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
+
+    def start_chat(
+        self, account_id: str, *, user: dict[str, str], message_text: Optional[str] = None
+    ) -> Any:
+        try:
+            kwargs: dict[str, Any] = {"account_id": account_id, "user": user}
+            if message_text:
+                kwargs["message_text"] = message_text
+            return self._client.chats.start(**kwargs)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to start chat via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc

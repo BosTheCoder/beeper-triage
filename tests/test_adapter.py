@@ -66,3 +66,27 @@ def test_remove_reaction_wraps_errors():
     c._client.chats.messages.reactions.delete.side_effect = RuntimeError("boom")
     with pytest.raises(BeeperSDKError):
         c.remove_reaction("!chat", "$msg", "👍")
+
+
+def test_start_chat_phone():
+    c = _adapter()
+    c._client.chats.start.return_value = MagicMock()
+    c.start_chat("acct1", user={"phone_number": "+15551234567"}, message_text="hi")
+    c._client.chats.start.assert_called_once_with(
+        account_id="acct1", user={"phone_number": "+15551234567"}, message_text="hi"
+    )
+
+
+def test_start_chat_omits_message_when_none():
+    c = _adapter()
+    c.start_chat("acct1", user={"username": "alice"})
+    c._client.chats.start.assert_called_once_with(
+        account_id="acct1", user={"username": "alice"}
+    )
+
+
+def test_start_chat_wraps_errors():
+    c = _adapter()
+    c._client.chats.start.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.start_chat("acct1", user={"username": "alice"})
