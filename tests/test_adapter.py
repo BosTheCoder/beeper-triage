@@ -36,3 +36,33 @@ def test_mark_unread_wraps_errors():
     c._client.chats.mark_unread.side_effect = RuntimeError("boom")
     with pytest.raises(BeeperSDKError):
         c.mark_unread("!chat")
+
+
+def test_add_reaction_calls_sdk():
+    c = _adapter()
+    c.add_reaction("!chat", "$msg", "👍")
+    c._client.chats.messages.reactions.add.assert_called_once_with(
+        "$msg", chat_id="!chat", reaction_key="👍"
+    )
+
+
+def test_remove_reaction_calls_sdk():
+    c = _adapter()
+    c.remove_reaction("!chat", "$msg", "👍")
+    c._client.chats.messages.reactions.delete.assert_called_once_with(
+        "👍", chat_id="!chat", message_id="$msg"
+    )
+
+
+def test_add_reaction_wraps_errors():
+    c = _adapter()
+    c._client.chats.messages.reactions.add.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.add_reaction("!chat", "$msg", "👍")
+
+
+def test_remove_reaction_wraps_errors():
+    c = _adapter()
+    c._client.chats.messages.reactions.delete.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.remove_reaction("!chat", "$msg", "👍")

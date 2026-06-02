@@ -398,3 +398,23 @@ class BeeperClient:
             raise BeeperSDKError(
                 f"Failed to mark chat unread via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
+
+    def add_reaction(self, chat_id: str, message_id: str, reaction_key: str) -> Any:
+        try:
+            return self._client.chats.messages.reactions.add(
+                message_id, chat_id=chat_id, reaction_key=reaction_key
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to add reaction via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def remove_reaction(self, chat_id: str, message_id: str, reaction_key: str) -> Any:
+        try:
+            return self._client.chats.messages.reactions.delete(
+                reaction_key, chat_id=chat_id, message_id=message_id
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to remove reaction via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
