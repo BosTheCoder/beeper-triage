@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
@@ -383,9 +384,7 @@ class BeeperClient:
             ) from exc
 
     def upload_asset(self, path: "Path", mime_type: Optional[str] = None) -> Any:
-        from pathlib import Path as _P
-
-        p = _P(path)
+        p = Path(path)
         mime = mime_type or mimetypes.guess_type(p.name)[0]
         try:
             kwargs: dict[str, Any] = {"file": p, "file_name": p.name}
@@ -405,8 +404,6 @@ class BeeperClient:
         attachment_path: "Optional[Path]" = None,
         attachment_mime: Optional[str] = None,
     ) -> Any:
-        from pathlib import Path as _P
-
         try:
             kwargs: dict[str, Any] = {"chat_id": chat_id}
             if text is not None:
@@ -414,7 +411,7 @@ class BeeperClient:
             if reply_to_message_id is not None:
                 kwargs["reply_to_message_id"] = reply_to_message_id
             if attachment_path is not None:
-                p = _P(attachment_path)
+                p = Path(attachment_path)
                 mime = attachment_mime or mimetypes.guess_type(p.name)[0]
                 up = self.upload_asset(p, mime_type=mime)
                 upload_id = self._get_attr(up, "upload_id", "uploadID", "id")

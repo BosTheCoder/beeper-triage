@@ -123,3 +123,4 @@ def test_send_message_with_attachment_builds_attachment():
     assert kwargs["attachment"]["upload_id"] == "up123"
     assert kwargs["attachment"]["type"] == "image"
     assert kwargs["attachment"]["mime_type"] == "image/png"
+    assert kwargs["attachment"]["file_name"] == "pic.png"
