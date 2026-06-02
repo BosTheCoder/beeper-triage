@@ -443,7 +443,10 @@ def _detect_wsl_host_ip() -> str:
 
 
 _WSL_HOST_IP = _detect_wsl_host_ip()
-_PROXY_PORTS = [23374, 23373]
+# Unified fixed proxy port — wsl_proxy.py listens on 0.0.0.0:23399 and detects
+# Beeper's actual (drifting) loopback port itself, so the CLI and the MCP both
+# reach it at a single stable port regardless of Beeper version.
+_PROXY_PORTS = [23399]
 _PROXY_MODULE_PATH = os.path.join(os.path.dirname(__file__), "wsl_proxy.py")
 
 
