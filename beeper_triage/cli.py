@@ -239,7 +239,7 @@ def _export_transcript(
 
 
 def _pick_action() -> Optional[str]:
-    """Prompt user to pick an action. Returns 'reply', 'copy', or None (cancelled)."""
+    """Prompt user to pick an action. Returns 'reply', 'copy', 'export', or None (cancelled)."""
     try:
         while True:
             choice = input(
