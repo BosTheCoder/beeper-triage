@@ -1,4 +1,5 @@
 """Tests for BeeperClient adapter methods (SDK mocked)."""
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -90,3 +91,35 @@ def test_start_chat_wraps_errors():
     c._client.chats.start.side_effect = RuntimeError("boom")
     with pytest.raises(BeeperSDKError):
         c.start_chat("acct1", user={"username": "alice"})
+
+
+def test_upload_asset_calls_sdk(tmp_path):
+    c = _adapter()
+    f = tmp_path / "pic.png"
+    f.write_bytes(b"\x89PNG\r\n")
+    c.upload_asset(f, mime_type="image/png")
+    _, kwargs = c._client.assets.upload.call_args
+    assert kwargs["mime_type"] == "image/png"
+    assert kwargs["file_name"] == "pic.png"
+    assert kwargs["file"] == f
+
+
+def test_send_message_text_only_unchanged(tmp_path):
+    c = _adapter()
+    c.send_message("!chat", text="hello", reply_to_message_id="$r")
+    c._client.messages.send.assert_called_once_with(
+        chat_id="!chat", text="hello", reply_to_message_id="$r"
+    )
+
+
+def test_send_message_with_attachment_builds_attachment():
+    c = _adapter()
+    c._client.assets.upload.return_value = MagicMock(upload_id="up123")
+    c.send_message("!chat", text="caption", attachment_path=Path("/tmp/pic.png"),
+                   attachment_mime="image/png")
+    _, kwargs = c._client.messages.send.call_args
+    assert kwargs["chat_id"] == "!chat"
+    assert kwargs["text"] == "caption"
+    assert kwargs["attachment"]["upload_id"] == "up123"
+    assert kwargs["attachment"]["type"] == "image"
+    assert kwargs["attachment"]["mime_type"] == "image/png"

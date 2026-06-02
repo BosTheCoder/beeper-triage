@@ -1,6 +1,7 @@
 """Tier-1 Beeper verbs (send/react/mark-read/start), registered onto the CLI app."""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -114,9 +115,38 @@ def _start(
          json_flag=eff_json, human=f"Started chat {chat_id}.")
 
 
+def _send(
+    chat_id: str = typer.Argument(..., help="Chat ID to send to."),
+    text: Optional[str] = typer.Option(None, "--text", help="Message text."),
+    attach: Optional[Path] = typer.Option(None, "--attach", exists=True, dir_okay=False,
+                                          help="Path to a file/image to attach."),
+    reply_to: Optional[str] = typer.Option(None, "--reply-to", help="Message ID to reply to."),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Send a message, optionally with an attachment and/or as a reply."""
+    eff_json = resolve_json_flag(agent, json_)
+    if text is None and attach is None:
+        emit({"error": "Provide --text and/or --attach."}, json_flag=eff_json,
+             human="Provide --text and/or --attach.")
+        raise typer.Exit(code=2)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        result = client.send_message(
+            chat_id, text=text, reply_to_message_id=reply_to, attachment_path=attach
+        )
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    message_id = getattr(result, "message_id", None) or getattr(result, "messageID", None)
+    emit({"chatID": chat_id, "messageID": message_id, "status": "sent"},
+         json_flag=eff_json, human=f"Sent to {chat_id} (message {message_id}).")
+
+
 def register(app: typer.Typer) -> None:
     """Attach the Tier-1 verb commands to the given Typer app."""
     app.command("mark-read")(_mark_read)
     app.command("mark-unread")(_mark_unread)
     app.command("react")(_react)
     app.command("start")(_start)
+    app.command("send")(_send)

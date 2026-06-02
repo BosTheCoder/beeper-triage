@@ -100,3 +100,40 @@ def test_start_command_rejects_two_identifiers(monkeypatch):
     monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: MagicMock())
     result = runner.invoke(app, ["start", "acct1", "--phone", "+1", "--username", "alice", "--json"])
     assert result.exit_code == 2
+
+
+def test_send_text_command(monkeypatch):
+    fake = MagicMock()
+    fake.send_message.return_value = MagicMock(message_id="$m1")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["send", "!chat", "--text", "hello", "--json"])
+    assert result.exit_code == 0
+    _, kwargs = fake.send_message.call_args
+    assert kwargs["text"] == "hello" and kwargs["attachment_path"] is None
+
+
+def test_send_attach_command(monkeypatch, tmp_path):
+    f = tmp_path / "pic.png"
+    f.write_bytes(b"x")
+    fake = MagicMock()
+    fake.send_message.return_value = MagicMock(message_id="$m2")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["send", "!chat", "--attach", str(f), "--json"])
+    assert result.exit_code == 0
+    _, kwargs = fake.send_message.call_args
+    assert str(kwargs["attachment_path"]) == str(f)
+
+
+def test_send_requires_text_or_attach(monkeypatch):
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: MagicMock())
+    result = runner.invoke(app, ["send", "!chat", "--json"])
+    assert result.exit_code == 2
+
+
+def test_send_command_error(monkeypatch):
+    fake = MagicMock()
+    fake.send_message.side_effect = BeeperSDKError("nope")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["send", "!chat", "--text", "hi", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)
