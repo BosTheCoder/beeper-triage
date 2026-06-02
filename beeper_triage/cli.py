@@ -564,6 +564,41 @@ def _ensure_proxy() -> str:
     raise typer.Exit(code=1)
 
 
+def _resolve_base_url(*, agent: bool) -> str:
+    """Return a reachable Beeper API base URL.
+
+    Uses BEEPER_BASE_URL if set and reachable; otherwise (or if the configured
+    URL refuses a connection) auto-detects/starts the WSL proxy. The
+    'not reachable' info line is suppressed in agent mode.
+    """
+    base_url = os.getenv("BEEPER_BASE_URL")
+    if not base_url:
+        return _ensure_proxy()
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(base_url)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect((parsed.hostname, parsed.port))
+        sock.close()
+    except (ConnectionRefusedError, OSError, socket.timeout):
+        if not agent:
+            typer.echo(f"[!] Configured proxy at {base_url} not reachable — auto-detecting ...")
+        base_url = _ensure_proxy()
+    return base_url
+
+
+def _build_client(access_token: str, *, agent: bool) -> "BeeperClient":
+    """Resolve the base URL and construct a BeeperClient.
+
+    Raises BeeperSDKError if the SDK client cannot be constructed; callers
+    keep their own error-handling UX.
+    """
+    base_url = _resolve_base_url(agent=agent)
+    return BeeperClient(access_token=access_token, base_url=base_url)
+
+
 @app.command()
 def triage(
     model: Optional[str] = typer.Option(
@@ -628,24 +663,8 @@ def triage(
     default_model = os.getenv("OPENROUTER_MODEL", "")
     editor = os.getenv("EDITOR", "")
 
-    base_url = os.getenv("BEEPER_BASE_URL")
-    if not base_url:
-        base_url = _ensure_proxy()
-    else:
-        # Even with a configured URL, verify the proxy is reachable; if not, auto-detect port
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(base_url)
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            sock.connect((parsed.hostname, parsed.port))
-            sock.close()
-        except (ConnectionRefusedError, OSError, socket.timeout):
-            typer.echo(f"[!] Configured proxy at {base_url} not reachable — auto-detecting ...")
-            base_url = _ensure_proxy()
-
     try:
-        client = BeeperClient(access_token=access_token, base_url=base_url)
+        client = _build_client(access_token, agent=agent)
     except BeeperSDKError as exc:
         logger.exception("Failed to initialize Beeper client")
         raise typer.BadParameter(str(exc)) from exc
@@ -962,24 +981,8 @@ def new_chat(
 
     access_token = _require_env("BEEPER_ACCESS_TOKEN")
 
-    base_url = os.getenv("BEEPER_BASE_URL")
-    if not base_url:
-        base_url = _ensure_proxy()
-    else:
-        try:
-            from urllib.parse import urlparse
-            parsed = urlparse(base_url)
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            sock.connect((parsed.hostname, parsed.port))
-            sock.close()
-        except (ConnectionRefusedError, OSError, socket.timeout):
-            if not agent:
-                typer.echo(f"[!] Configured proxy at {base_url} not reachable — auto-detecting ...")
-            base_url = _ensure_proxy()
-
     try:
-        client = BeeperClient(access_token=access_token, base_url=base_url)
+        client = _build_client(access_token, agent=agent)
     except BeeperSDKError as exc:
         if agent:
             typer.echo(json.dumps({"error": str(exc)}))
