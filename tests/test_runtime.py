@@ -1,7 +1,5 @@
 """Tests for the shared connection-bootstrap helpers."""
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 import beeper_triage.cli as cli
 
@@ -49,3 +47,23 @@ def test_build_client_passes_resolved_url(monkeypatch):
     monkeypatch.setattr(cli, "BeeperClient", fake_client)
     cli._build_client("tok123", agent=False)
     assert captured == {"access_token": "tok123", "base_url": "http://h:1"}
+
+
+def test_resolve_base_url_warns_when_not_agent(monkeypatch):
+    monkeypatch.setenv("BEEPER_BASE_URL", "http://172.28.96.1:23399")
+    monkeypatch.setattr(cli.socket, "socket", lambda *a, **k: _fake_socket_refused())
+    monkeypatch.setattr(cli, "_ensure_proxy", lambda: "http://127.0.0.1:23399")
+    calls = []
+    monkeypatch.setattr(cli.typer, "echo", lambda msg: calls.append(msg))
+    cli._resolve_base_url(agent=False)
+    assert any("not reachable" in c for c in calls)
+
+
+def test_resolve_base_url_silent_when_agent(monkeypatch):
+    monkeypatch.setenv("BEEPER_BASE_URL", "http://172.28.96.1:23399")
+    monkeypatch.setattr(cli.socket, "socket", lambda *a, **k: _fake_socket_refused())
+    monkeypatch.setattr(cli, "_ensure_proxy", lambda: "http://127.0.0.1:23399")
+    calls = []
+    monkeypatch.setattr(cli.typer, "echo", lambda msg: calls.append(msg))
+    cli._resolve_base_url(agent=True)
+    assert calls == []

@@ -11,6 +11,7 @@ import shutil
 import socket
 import subprocess
 import time
+from urllib.parse import urlparse
 from dataclasses import asdict
 from typing import Iterable, Optional
 
@@ -575,13 +576,13 @@ def _resolve_base_url(*, agent: bool) -> str:
     if not base_url:
         return _ensure_proxy()
     try:
-        from urllib.parse import urlparse
-
         parsed = urlparse(base_url)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(2)
-        sock.connect((parsed.hostname, parsed.port))
-        sock.close()
+        try:
+            sock.connect((parsed.hostname, parsed.port))
+        finally:
+            sock.close()
     except (ConnectionRefusedError, OSError, socket.timeout):
         if not agent:
             typer.echo(f"[!] Configured proxy at {base_url} not reachable — auto-detecting ...")
