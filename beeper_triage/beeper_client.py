@@ -244,7 +244,7 @@ class BeeperClient:
 
     def get_chat(self, chat_id: str) -> Any:
         try:
-            return self._client.chats.get(chat_id)
+            return self._client.chats.retrieve(chat_id)
         except Exception as exc:
             raise BeeperSDKError(
                 f"Failed to fetch chat details via SDK: {type(exc).__name__}: {str(exc)}"
