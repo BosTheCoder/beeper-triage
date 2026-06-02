@@ -34,31 +34,33 @@ beeper-triage
 
 ## Usage
 
+> The command was renamed from `beeper-triage` to `beeper`; `beeper-triage` still works as a deprecated alias.
+
 ```bash
 # Basic triage
-beeper-triage
+beeper triage
 
 # Limit chats and set message window upfront
-beeper-triage --max-chats 30 --message-window 7d
+beeper triage --max-chats 30 --message-window 7d
 
 # Override LLM model
-beeper-triage --model openai/gpt-4o-mini
+beeper triage --model openai/gpt-4o-mini
 
 # Skip LLM / dry-run
-beeper-triage --no-llm --dry-run
+beeper triage --no-llm --dry-run
 
 # Include muted chats
-beeper-triage --include-muted
+beeper triage --include-muted
 
 # Only chats where someone else sent the last message
-beeper-triage --needs-reply-only
+beeper triage --needs-reply-only
 
 # Force refresh the chat cache (bypasses 6-hour TTL)
-beeper-triage --refresh-chats
+beeper triage --refresh-chats
 
 # Provide reply guidance upfront (skip interactive prompt)
-beeper-triage --guidance close
-beeper-triage --guidance "ask about the weekend"
+beeper triage --guidance close
+beeper triage --guidance "ask about the weekend"
 ```
 
 After selecting a chat, the CLI prompts for a message window (today, 2d, 7d, 14d, 30d, 60d, 365d, all).

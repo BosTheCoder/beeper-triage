@@ -18,7 +18,8 @@ dependencies = [
 ]
 
 [project.scripts]
-beeper-triage = "beeper_triage.cli:app"
+beeper = "beeper_triage.cli:app"
+beeper-triage = "beeper_triage.cli:app"  # deprecated alias; remove after migration
 beeper-proxy = "beeper_triage.wsl_proxy:main"
 
 [tool.setuptools.packages.find]
