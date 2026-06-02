@@ -1,0 +1,31 @@
+"""Tests for BeeperClient adapter methods (SDK mocked)."""
+from unittest.mock import MagicMock
+
+import pytest
+
+from beeper_triage.beeper_client import BeeperClient, BeeperSDKError
+
+
+def _adapter():
+    c = BeeperClient.__new__(BeeperClient)  # bypass __init__ (no real SDK/connection)
+    c._client = MagicMock()
+    return c
+
+
+def test_mark_read_calls_sdk():
+    c = _adapter()
+    c.mark_read("!chat")
+    c._client.chats.mark_read.assert_called_once_with("!chat")
+
+
+def test_mark_unread_calls_sdk():
+    c = _adapter()
+    c.mark_unread("!chat")
+    c._client.chats.mark_unread.assert_called_once_with("!chat")
+
+
+def test_mark_read_wraps_errors():
+    c = _adapter()
+    c._client.chats.mark_read.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.mark_read("!chat")

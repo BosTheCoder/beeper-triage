@@ -1,7 +1,13 @@
 """Tests for verb commands and shared verb dispatch."""
+import json
 from unittest.mock import MagicMock
 
+from typer.testing import CliRunner
+
+from beeper_triage.cli import app
 from beeper_triage.output import resolve_json_flag
+
+runner = CliRunner()
 
 
 def test_resolve_json_flag_agent_forces_json():
@@ -13,3 +19,21 @@ def test_resolve_json_flag_non_agent_passes_through():
     assert resolve_json_flag(False, None) is None
     assert resolve_json_flag(False, True) is True
     assert resolve_json_flag(False, False) is False
+
+
+def test_mark_read_command(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["mark-read", "!chat", "--json"])
+    assert result.exit_code == 0
+    fake.mark_read.assert_called_once_with("!chat")
+    assert json.loads(result.stdout) == {"chatID": "!chat", "status": "read"}
+
+
+def test_mark_unread_command(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["mark-unread", "!chat", "--json"])
+    assert result.exit_code == 0
+    fake.mark_unread.assert_called_once_with("!chat")
+    assert json.loads(result.stdout) == {"chatID": "!chat", "status": "unread"}

@@ -382,3 +382,19 @@ class BeeperClient:
             raise BeeperSDKError(
                 f"Failed to send message via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
+
+    def mark_read(self, chat_id: str) -> Any:
+        try:
+            return self._client.chats.mark_read(chat_id)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to mark chat read via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def mark_unread(self, chat_id: str) -> Any:
+        try:
+            return self._client.chats.mark_unread(chat_id)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to mark chat unread via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
