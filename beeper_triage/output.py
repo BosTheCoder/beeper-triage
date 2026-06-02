@@ -21,7 +21,9 @@ def is_json_mode(json_flag: Optional[bool]) -> bool:
 def emit(data: Any, *, json_flag: Optional[bool] = None, human: Optional[str] = None) -> None:
     """Print `data` as JSON in machine mode, or `human` text in human mode.
 
-    Falls back to indented JSON for humans when no `human` string is supplied.
+    In JSON mode the `human` argument is intentionally ignored — all data
+    travels through `data` for machine consumers. Falls back to indented JSON
+    for humans when no `human` string is supplied.
     """
     if is_json_mode(json_flag):
         print(json.dumps(data, default=str))

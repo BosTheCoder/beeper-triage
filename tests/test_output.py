@@ -27,3 +27,11 @@ def test_emit_json_mode(capsys):
 def test_emit_human_mode(capsys):
     emit({"a": 1}, json_flag=False, human="hello human")
     assert capsys.readouterr().out.strip() == "hello human"
+
+
+def test_emit_human_fallback_to_indented_json(capsys):
+    # Human mode with no `human` string falls back to indented JSON.
+    emit({"a": 1}, json_flag=False)
+    out = capsys.readouterr().out
+    assert json.loads(out) == {"a": 1}
+    assert "\n" in out  # indented (multi-line) output, not compact
