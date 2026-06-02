@@ -111,8 +111,14 @@ def test_pick_action_default_is_reply():
         assert _pick_action() == "reply"
 
 
+def test_pick_action_export():
+    with patch("builtins.input", return_value="3"):
+        assert _pick_action() == "export"
+
+
 def test_pick_action_invalid_then_valid():
-    with patch("builtins.input", side_effect=["3", "2"]):
+    # "9" is not a valid choice (1/2/3) -> prompt loops -> "2" selects copy.
+    with patch("builtins.input", side_effect=["9", "2"]):
         assert _pick_action() == "copy"
 
 
