@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from typer.testing import CliRunner
 
+from beeper_triage.beeper_client import BeeperSDKError
 from beeper_triage.cli import app
 from beeper_triage.output import resolve_json_flag
 
@@ -37,3 +38,12 @@ def test_mark_unread_command(monkeypatch):
     assert result.exit_code == 0
     fake.mark_unread.assert_called_once_with("!chat")
     assert json.loads(result.stdout) == {"chatID": "!chat", "status": "unread"}
+
+
+def test_mark_read_command_error(monkeypatch):
+    fake = MagicMock()
+    fake.mark_read.side_effect = BeeperSDKError("nope")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["mark-read", "!chat", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)

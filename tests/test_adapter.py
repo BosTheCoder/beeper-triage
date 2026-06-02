@@ -29,3 +29,10 @@ def test_mark_read_wraps_errors():
     c._client.chats.mark_read.side_effect = RuntimeError("boom")
     with pytest.raises(BeeperSDKError):
         c.mark_read("!chat")
+
+
+def test_mark_unread_wraps_errors():
+    c = _adapter()
+    c._client.chats.mark_unread.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.mark_unread("!chat")

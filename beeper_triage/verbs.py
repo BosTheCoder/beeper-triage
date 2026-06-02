@@ -28,14 +28,14 @@ def _mark_read(
     json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
 ) -> None:
     """Mark a chat as read."""
+    eff_json = resolve_json_flag(agent, json_)
     client = build_client_or_exit(agent=agent, json_flag=json_)
     try:
         client.mark_read(chat_id)
     except BeeperSDKError as exc:
-        emit({"error": str(exc)}, json_flag=resolve_json_flag(agent, json_), human=f"Error: {exc}")
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
         raise typer.Exit(code=1)
-    emit({"chatID": chat_id, "status": "read"},
-         json_flag=resolve_json_flag(agent, json_), human=f"Marked {chat_id} as read.")
+    emit({"chatID": chat_id, "status": "read"}, json_flag=eff_json, human=f"Marked {chat_id} as read.")
 
 
 def _mark_unread(
@@ -44,14 +44,14 @@ def _mark_unread(
     json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
 ) -> None:
     """Mark a chat as unread."""
+    eff_json = resolve_json_flag(agent, json_)
     client = build_client_or_exit(agent=agent, json_flag=json_)
     try:
         client.mark_unread(chat_id)
     except BeeperSDKError as exc:
-        emit({"error": str(exc)}, json_flag=resolve_json_flag(agent, json_), human=f"Error: {exc}")
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
         raise typer.Exit(code=1)
-    emit({"chatID": chat_id, "status": "unread"},
-         json_flag=resolve_json_flag(agent, json_), human=f"Marked {chat_id} as unread.")
+    emit({"chatID": chat_id, "status": "unread"}, json_flag=eff_json, human=f"Marked {chat_id} as unread.")
 
 
 def register(app: typer.Typer) -> None:
