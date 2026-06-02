@@ -15,7 +15,7 @@
 
 The Beeper-provided MCP server exposes only ~12 of the ~30 Beeper Desktop API operations (verified 2026-06-02 against `developers.beeper.com`). It is a *read + send-text + archive + remind + search + focus* surface. Missing, in order of everyday impact: **send attachments, react, start a new chat, mark read/unread** (Tier 1); **edit/delete messages, download incoming media, PATCH chat (draft/rename/mute/pin)** (Tier 2); and a long tail (contacts, bridges, info).
 
-`beeper-triage` has meanwhile grown from a reply tool into an offline-export + multi-feature tool with a hand-rolled partial API client (`beeper_client.py`, ~7 ops including `create_chat`, which the MCP lacks). It is becoming, in effect, a CLI over the Beeper API.
+`beeper-triage` has meanwhile grown from a reply tool into an offline-export + multi-feature tool. It is becoming, in effect, a CLI over the Beeper API. **Important correction (verified by reading the code 2026-06-02):** `beeper_client.py` is **already a thin adapter over the official `beeper_desktop_api` SDK** — it imports `from beeper_desktop_api import BeeperDesktop` and calls `client.chats.list()`, `client.messages.send()`, `client.chats.create()`, etc. The SDK is already a `pyproject.toml` dependency, and the CLI is a **`typer`** app (`beeper-triage = beeper_triage.cli:app`) that **already has two commands** (`triage` default + `new-chat`) and a partial `--agent`/JSON-output convention. So the work is **not** "adopt the SDK" — it is **restructure** (rename, modularise, de-duplicate the connection bootstrap) and **extend the adapter** with the operations it doesn't yet wrap (`react`, `edit`, `delete`, `archive`, `mark_read/unread`, `start`, asset up/download, `chats.search`, `messages.search`).
 
 This spec rationalises the three ways to reach Beeper (MCP, `beeper-triage`, raw API) into one coherent setup, optimised primarily for an **AI agent** with the user retaining the interactive triage flow.
 
@@ -23,7 +23,7 @@ This spec rationalises the three ways to reach Beeper (MCP, `beeper-triage`, raw
 
 - Give the AI agent reliable, full-API Beeper power (especially the Tier-1 gaps).
 - Preserve the user's interactive triage/export workflow unchanged.
-- Stop maintaining a hand-rolled API client.
+- Lean on the official SDK the adapter already wraps; **extend** the adapter with missing operations rather than hand-rolling HTTP.
 - Register the tool into the new `toolkit` framework for discovery, machine-scoped sync, and `doctor` coverage.
 - Give the agent a single routing skill so it knows which path to use when.
 
@@ -53,9 +53,16 @@ This spec rationalises the three ways to reach Beeper (MCP, `beeper-triage`, raw
 
 ## Component 1 — the `beeper` CLI
 
-### Rename & client swap
-- Rename the **command** `beeper-triage` → `beeper`. The repo may keep its name; the entry point and console-script become `beeper`. `triage` becomes one verb among many.
-- **Replace `beeper_client.py` with the official Beeper Desktop Python SDK** (the SDK that backs `@beeper/desktop-api`, covers 100% of `/v1`, tracks new endpoints). Keep the proven WSL connection bootstrap (proxy auto-start + `BEEPER_BASE_URL` + `Authorization: Bearer $BEEPER_ACCESS_TOKEN`) as a thin shim that constructs/configures the SDK client. The hand-rolled client is deleted once parity is proven.
+### Rename & restructure (no SDK swap — the SDK is already adopted)
+- Rename the **command** `beeper-triage` → `beeper` (console-script in `pyproject.toml`). The repo may keep its name; `triage` becomes one verb among many.
+- **Extract the duplicated connection bootstrap** (proxy auto-start + `BEEPER_BASE_URL` reachability check + `BeeperClient` construction with `Authorization: Bearer $BEEPER_ACCESS_TOKEN`) — currently copy-pasted in both `triage` and `new-chat` — into one shared helper so every verb gets it for free.
+- **Extend the existing `beeper_client.py` adapter** with the missing SDK calls (exact methods confirmed from the SDK's `api.md`):
+  - `client.chats.messages.reactions.add(message_id, chat_id=…, …)` / `.delete(reaction_key, chat_id=…, message_id=…)`
+  - `client.messages.update(message_id, chat_id=…, …)` (edit) · `client.messages.delete(message_id, chat_id=…, …)` · `client.messages.retrieve(message_id, chat_id=…)`
+  - `client.chats.archive(chat_id, …)` · `client.chats.mark_read(chat_id, …)` · `client.chats.mark_unread(chat_id, …)` · `client.chats.start(…)` · `client.chats.update(chat_id, …)`
+  - `client.assets.upload(file=Path(…))` · `client.assets.serve(…)` / `client.assets.download(…)`
+  - `client.chats.search(…)` · `client.messages.search(…)`
+  - Note: a few methods take `**params`; the exact keyword names (e.g. the reaction-emoji key, archive's boolean, delete's for-everyone flag) are verified by introspection as the first task of the verb phase, not guessed.
 
 ### Verb surface
 
@@ -134,7 +141,7 @@ Plus:
 
 ## Phasing
 
-1. **SDK swap + rename + toolkit registration.** Adopt the official SDK behind the connection shim; rename command to `beeper`; preserve `triage`/`export`/reads exactly; promote `bpt.sh` → `tools/comms/beeper.sh` (scoped tag, `@needs beeper`). Tests green. *(Foundation; no new user-facing features.)*
+1. **Rename + restructure + toolkit registration.** Rename command → `beeper`; extract the shared connection bootstrap out of `triage`/`new-chat`; add the JSON/TTY output helper; preserve `triage`/`export`/reads behaviour exactly; promote `bpt.sh` → `tools/comms/beeper.sh` (scoped tag, `@needs beeper`). Tests green. *(Foundation; no new user-facing features. No SDK swap — the SDK is already in use.)*
 2. **Tier-1 verbs.** `send --attach`, `react`, `mark-read`/`mark-unread`, `start` + the JSON/TTY output contract.
 3. **Passthrough + Tier-2.** `beeper api`, then `edit`/`delete`/`dl`.
 4. **Routing skill.** Author the `beeper` skill with the decision table + MCP-up check + connection note.
@@ -143,5 +150,6 @@ Phases 1–3 have no external dependency. Phase 4 documents the result.
 
 ## Open questions / deferred
 
-- Exact official SDK package name/version to pin — confirm at implementation time (TS pkg is `@beeper/desktop-api` v5.x; verify the Python distribution name).
-- Whether `export`'s current on-disk format needs any change when reads route through the SDK (default: keep format identical).
+- ~~Exact official SDK package name~~ — **resolved:** Python package is `beeper_desktop_api` (`from beeper_desktop_api import BeeperDesktop`), already a dependency; published install will be `pip install beeper_desktop_api`. Version to pin: confirm latest at implementation time.
+- Exact `**params` keyword names for `reactions.add` (emoji key), `chats.archive` (bool), `messages.delete` (for-everyone), and `messages.send` (attachment param) — resolved by SDK introspection as the first task of the verb phase.
+- Whether `export`'s current on-disk format needs any change (default: keep identical — no behaviour change in Phase 1).
