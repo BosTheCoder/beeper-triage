@@ -93,10 +93,10 @@ def test_start_command_phone(monkeypatch):
 def test_start_command_requires_one_identifier(monkeypatch):
     monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: MagicMock())
     result = runner.invoke(app, ["start", "acct1", "--json"])
-    assert result.exit_code != 0
+    assert result.exit_code == 2
 
 
 def test_start_command_rejects_two_identifiers(monkeypatch):
     monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: MagicMock())
     result = runner.invoke(app, ["start", "acct1", "--phone", "+1", "--username", "alice", "--json"])
-    assert result.exit_code != 0
+    assert result.exit_code == 2
