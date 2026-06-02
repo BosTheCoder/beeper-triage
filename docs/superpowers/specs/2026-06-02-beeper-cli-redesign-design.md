@@ -56,7 +56,8 @@ This spec rationalises the three ways to reach Beeper (MCP, `beeper-triage`, raw
 ### Rename & restructure (no SDK swap — the SDK is already adopted)
 - Rename the **command** `beeper-triage` → `beeper` (console-script in `pyproject.toml`). The repo may keep its name; `triage` becomes one verb among many.
 - **Extract the duplicated connection bootstrap** (proxy auto-start + `BEEPER_BASE_URL` reachability check + `BeeperClient` construction with `Authorization: Bearer $BEEPER_ACCESS_TOKEN`) — currently copy-pasted in both `triage` and `new-chat` — into one shared helper so every verb gets it for free.
-- **Extend the existing `beeper_client.py` adapter** with the missing SDK calls (exact methods confirmed from the SDK's `api.md`):
+- **SDK version reality (verified 2026-06-02 by introspecting installed + isolated v5):** the *installed* SDK was `beeper_desktop_api` **v4.1.296**, which does **not** wrap reactions, mark-read/unread, start, message edit/delete, chat update, or asset upload. **v5.0.0** (on PyPI) wraps all of them. **Decision: upgrade to `beeper_desktop_api==5.0.0`** as the first task of Phase 2, with a regression pass on existing `triage`/`new-chat`/`export` (note: the adapter's `get_chat` calls `chats.get`, which neither version has — it must become `chats.retrieve`).
+- **Extend the existing `beeper_client.py` adapter** with the missing SDK calls (exact v5.0.0 signatures, introspected):
   - `client.chats.messages.reactions.add(message_id, chat_id=…, …)` / `.delete(reaction_key, chat_id=…, message_id=…)`
   - `client.messages.update(message_id, chat_id=…, …)` (edit) · `client.messages.delete(message_id, chat_id=…, …)` · `client.messages.retrieve(message_id, chat_id=…)`
   - `client.chats.archive(chat_id, …)` · `client.chats.mark_read(chat_id, …)` · `client.chats.mark_unread(chat_id, …)` · `client.chats.start(…)` · `client.chats.update(chat_id, …)`
@@ -150,6 +151,6 @@ Phases 1–3 have no external dependency. Phase 4 documents the result.
 
 ## Open questions / deferred
 
-- ~~Exact official SDK package name~~ — **resolved:** Python package is `beeper_desktop_api` (`from beeper_desktop_api import BeeperDesktop`), already a dependency; published install will be `pip install beeper_desktop_api`. Version to pin: confirm latest at implementation time.
+- ~~Exact official SDK package name~~ — **resolved:** Python package is `beeper_desktop_api` (`from beeper_desktop_api import BeeperDesktop`). **Pin `==5.0.0`** (was unpinned, resolved to 4.1.296 which lacks the Tier-1 methods). v5 verb signatures introspected: `chats.messages.reactions.add(message_id, *, chat_id, reaction_key)` / `.delete(reaction_key, *, chat_id, message_id)`; `chats.mark_read/.mark_unread(chat_id, *, message_id?)`; `chats.start(*, account_id, user, allow_invite?, message_text?)` where `user` is `{id|email|phone_number|username|full_name}`; `assets.upload(file=, file_name?, mime_type?)`; `messages.send(chat_id, *, attachment?, text?, reply_to_message_id?)` where `attachment` is `{upload_id (required), type (image|video|audio|file|gif|voice-note|sticker), file_name?, mime_type?, size?, duration?}`.
 - Exact `**params` keyword names for `reactions.add` (emoji key), `chats.archive` (bool), `messages.delete` (for-everyone), and `messages.send` (attachment param) — resolved by SDK introspection as the first task of the verb phase.
 - Whether `export`'s current on-disk format needs any change (default: keep identical — no behaviour change in Phase 1).
