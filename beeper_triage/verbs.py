@@ -138,9 +138,9 @@ def _send(
     except BeeperSDKError as exc:
         emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
         raise typer.Exit(code=1)
-    message_id = getattr(result, "message_id", None) or getattr(result, "messageID", None)
-    emit({"chatID": chat_id, "messageID": message_id, "status": "sent"},
-         json_flag=eff_json, human=f"Sent to {chat_id} (message {message_id}).")
+    pending_id = getattr(result, "pending_message_id", None) or getattr(result, "pendingMessageID", None)
+    emit({"chatID": chat_id, "pendingMessageID": pending_id, "status": "sent"},
+         json_flag=eff_json, human=f"Sent to {chat_id} (pending {pending_id}).")
 
 
 def register(app: typer.Typer) -> None:

@@ -104,24 +104,26 @@ def test_start_command_rejects_two_identifiers(monkeypatch):
 
 def test_send_text_command(monkeypatch):
     fake = MagicMock()
-    fake.send_message.return_value = MagicMock(message_id="$m1")
+    fake.send_message.return_value = MagicMock(pending_message_id="$m1")
     monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
     result = runner.invoke(app, ["send", "!chat", "--text", "hello", "--json"])
     assert result.exit_code == 0
     _, kwargs = fake.send_message.call_args
     assert kwargs["text"] == "hello" and kwargs["attachment_path"] is None
+    assert json.loads(result.stdout)["pendingMessageID"] == "$m1"
 
 
 def test_send_attach_command(monkeypatch, tmp_path):
     f = tmp_path / "pic.png"
     f.write_bytes(b"x")
     fake = MagicMock()
-    fake.send_message.return_value = MagicMock(message_id="$m2")
+    fake.send_message.return_value = MagicMock(pending_message_id="$m2")
     monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
     result = runner.invoke(app, ["send", "!chat", "--attach", str(f), "--json"])
     assert result.exit_code == 0
     _, kwargs = fake.send_message.call_args
     assert str(kwargs["attachment_path"]) == str(f)
+    assert json.loads(result.stdout)["pendingMessageID"] == "$m2"
 
 
 def test_send_requires_text_or_attach(monkeypatch):
