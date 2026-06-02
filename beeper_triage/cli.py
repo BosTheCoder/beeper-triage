@@ -20,7 +20,8 @@ from .beeper_client import BeeperChat, BeeperClient, BeeperMessage, BeeperSDKErr
 from .editor import EditorError, edit_text
 from .openrouter_client import OpenRouterClient, OpenRouterError
 from .prompts import build_analyse_prompt, build_prompt, build_todo_prompt
-from .runtime import _build_client, _ensure_proxy, _require_env, _resolve_base_url
+from .runtime import _build_client, _require_env
+from . import verbs
 
 app = typer.Typer(add_completion=False)
 
@@ -974,8 +975,6 @@ def new_chat(
         else:
             typer.echo(f"Chat with {contact_name} is ready. Use --chat-id {chat_id} to send messages.")
 
-
-from . import verbs
 
 verbs.register(app)
 

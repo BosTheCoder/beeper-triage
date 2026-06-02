@@ -25,4 +25,4 @@ def build_client_or_exit(*, agent: bool, json_flag: Optional[bool]) -> BeeperCli
 def register(app: typer.Typer) -> None:
     """Attach the Tier-1 verb commands to the given Typer app. Commands are added
     in later tasks."""
-    return None
+    pass

@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 import typer
 
-from .beeper_client import BeeperClient, BeeperSDKError
+from .beeper_client import BeeperClient
 
 logger = logging.getLogger(__name__)
 
