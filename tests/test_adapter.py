@@ -243,3 +243,44 @@ def test_raw_request_wraps_errors():
     c._client.get.side_effect = RuntimeError("boom")
     with pytest.raises(BeeperSDKError):
         c.raw_request("GET", "/v1/x")
+
+
+def test_raw_request_get_with_body_rejected():
+    c = _adapter()
+    with pytest.raises(BeeperSDKError):
+        c.raw_request("GET", "/v1/x", body={"a": 1})
+    c._client.get.assert_not_called()
+
+
+def test_get_message_wraps_errors():
+    c = _adapter()
+    c._client.messages.retrieve.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.get_message("!chat", "$msg")
+
+
+def test_download_attachment_no_src_url():
+    c = _adapter()
+    att = MagicMock(src_url=None, file_name="pic.png")
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg")
+
+
+def test_download_attachment_serve_fails():
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png")
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    c._client.assets.serve.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg")
+
+
+def test_raw_request_error_includes_status():
+    c = _adapter()
+    err = RuntimeError("forbidden")
+    err.status_code = 403
+    c._client.get.side_effect = err
+    with pytest.raises(BeeperSDKError) as ei:
+        c.raw_request("GET", "/v1/x")
+    assert "403" in str(ei.value)

@@ -56,9 +56,9 @@ class BeeperClient:
     """Thin wrapper around the official beeper_desktop_api SDK."""
 
     CACHE_DIR = os.path.expanduser("~/.cache/beeper-triage")
-    _RAW_METHODS = {"get", "post", "put", "patch", "delete"}
     CACHE_FILE = os.path.join(CACHE_DIR, "chats.json")
     CACHE_TTL_MS = 6 * 60 * 60 * 1000  # 6 hours in milliseconds
+    _RAW_METHODS = {"get", "post", "put", "patch", "delete"}
 
     def __init__(self, access_token: str, base_url: Optional[str] = None) -> None:
         try:
@@ -509,6 +509,11 @@ class BeeperClient:
 
         Returns {path, file_name, mime_type, file_size}. Raises BeeperSDKError
         if the message has no attachment at *index* or the serve/write fails.
+
+        Note: when an attachment has no ``file_name``, the fallback name is
+        ``"attachment"``.  Repeated downloads of such attachments to the default
+        path (cwd/attachment) will overwrite each other; pass ``out_path`` to
+        avoid this.
         """
         message = self.get_message(chat_id, message_id)
         attachments = self._get_attr(message, "attachments", default=None) or []
@@ -560,7 +565,9 @@ class BeeperClient:
         kwargs: dict[str, Any] = {"cast_to": object}
         if query:
             kwargs["options"] = {"params": query}
-        if body is not None and verb != "get":
+        if body is not None:
+            if verb == "get":
+                raise BeeperSDKError("GET requests do not accept a body.")
             kwargs["body"] = body
         try:
             return fn(path, **kwargs)
