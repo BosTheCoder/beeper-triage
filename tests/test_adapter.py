@@ -162,3 +162,49 @@ def test_delete_message_wraps_errors():
     c._client.messages.delete.side_effect = RuntimeError("boom")
     with pytest.raises(BeeperSDKError):
         c.delete_message("!chat", "$msg")
+
+
+def test_get_message_calls_sdk():
+    c = _adapter()
+    c.get_message("!chat", "$msg")
+    c._client.messages.retrieve.assert_called_once_with("$msg", chat_id="!chat")
+
+
+def test_download_attachment_default_path(tmp_path, monkeypatch):
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png",
+                    mime_type="image/png", file_size=70)
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    monkeypatch.chdir(tmp_path)  # default out = file_name in cwd
+    result = c.download_attachment("!chat", "$msg")
+    c._client.assets.serve.assert_called_once_with(url="mxc://x")
+    c._client.assets.serve.return_value.write_to_file.assert_called_once()
+    assert result["file_name"] == "pic.png"
+    assert result["mime_type"] == "image/png"
+    assert result["path"].endswith("pic.png")
+
+
+def test_download_attachment_explicit_out(tmp_path):
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png",
+                    mime_type="image/png", file_size=70)
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    out = tmp_path / "saved.png"
+    result = c.download_attachment("!chat", "$msg", out_path=str(out))
+    c._client.assets.serve.return_value.write_to_file.assert_called_once_with(str(out))
+    assert result["path"] == str(out)
+
+
+def test_download_attachment_no_attachments():
+    c = _adapter()
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[])
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg")
+
+
+def test_download_attachment_bad_index():
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png")
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg", index=5)

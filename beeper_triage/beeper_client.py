@@ -488,6 +488,55 @@ class BeeperClient:
                 f"Failed to delete message via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
+    def get_message(self, chat_id: str, message_id: str) -> Any:
+        try:
+            return self._client.messages.retrieve(message_id, chat_id=chat_id)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to retrieve message via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def download_attachment(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        index: int = 0,
+        out_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Download one attachment from a message to disk.
+
+        Returns {path, file_name, mime_type, file_size}. Raises BeeperSDKError
+        if the message has no attachment at *index* or the serve/write fails.
+        """
+        message = self.get_message(chat_id, message_id)
+        attachments = self._get_attr(message, "attachments", default=None) or []
+        if not attachments:
+            raise BeeperSDKError("Message has no attachments to download.")
+        if index < 0 or index >= len(attachments):
+            raise BeeperSDKError(
+                f"Attachment index {index} out of range (message has {len(attachments)})."
+            )
+        att = attachments[index]
+        src_url = self._get_attr(att, "src_url", "srcURL", default=None)
+        if not src_url:
+            raise BeeperSDKError("Attachment has no source URL.")
+        file_name = self._get_attr(att, "file_name", "fileName", default=None) or "attachment"
+        target = out_path or os.path.join(os.getcwd(), file_name)
+        try:
+            response = self._client.assets.serve(url=src_url)
+            response.write_to_file(target)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to download attachment via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+        return {
+            "path": target,
+            "file_name": file_name,
+            "mime_type": self._get_attr(att, "mime_type", "mimeType", default=None),
+            "file_size": self._get_attr(att, "file_size", "fileSize", default=None),
+        }
+
     def start_chat(
         self, account_id: str, *, user: dict[str, str], message_text: Optional[str] = None
     ) -> Any:
