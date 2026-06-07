@@ -476,6 +476,18 @@ class BeeperClient:
                 f"Failed to edit message via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
+    def delete_message(
+        self, chat_id: str, message_id: str, for_everyone: bool = False
+    ) -> Any:
+        try:
+            return self._client.messages.delete(
+                message_id, chat_id=chat_id, for_everyone=for_everyone
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to delete message via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
     def start_chat(
         self, account_id: str, *, user: dict[str, str], message_text: Optional[str] = None
     ) -> Any:

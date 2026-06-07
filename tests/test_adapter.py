@@ -139,3 +139,26 @@ def test_edit_message_wraps_errors():
     c._client.messages.update.side_effect = RuntimeError("boom")
     with pytest.raises(BeeperSDKError):
         c.edit_message("!chat", "$msg", "x")
+
+
+def test_delete_message_calls_sdk_default():
+    c = _adapter()
+    c.delete_message("!chat", "$msg")
+    c._client.messages.delete.assert_called_once_with(
+        "$msg", chat_id="!chat", for_everyone=False
+    )
+
+
+def test_delete_message_for_everyone():
+    c = _adapter()
+    c.delete_message("!chat", "$msg", for_everyone=True)
+    c._client.messages.delete.assert_called_once_with(
+        "$msg", chat_id="!chat", for_everyone=True
+    )
+
+
+def test_delete_message_wraps_errors():
+    c = _adapter()
+    c._client.messages.delete.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.delete_message("!chat", "$msg")
