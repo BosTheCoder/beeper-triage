@@ -4,13 +4,26 @@ from __future__ import annotations
 
 import datetime
 import json
+import mimetypes
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Iterable, Optional
 
 
 class BeeperSDKError(RuntimeError):
     """Raised when the Beeper SDK fails or is misused."""
+
+
+_ATTACHMENT_TYPE_BY_PREFIX = {"image": "image", "video": "video", "audio": "audio"}
+
+
+def _attachment_type_for_mime(mime_type: Optional[str]) -> str:
+    """Map a MIME type to the SDK attachment `type` enum; default to 'file'."""
+    if mime_type:
+        prefix = mime_type.split("/", 1)[0]
+        return _ATTACHMENT_TYPE_BY_PREFIX.get(prefix, "file")
+    return "file"
 
 
 @dataclass
@@ -244,7 +257,7 @@ class BeeperClient:
 
     def get_chat(self, chat_id: str) -> Any:
         try:
-            return self._client.chats.get(chat_id)
+            return self._client.chats.retrieve(chat_id)
         except Exception as exc:
             raise BeeperSDKError(
                 f"Failed to fetch chat details via SDK: {type(exc).__name__}: {str(exc)}"
@@ -370,15 +383,98 @@ class BeeperClient:
                 f"Failed to create chat via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
+    def upload_asset(self, path: "Path", mime_type: Optional[str] = None) -> Any:
+        p = Path(path)
+        mime = mime_type or mimetypes.guess_type(p.name)[0]
+        try:
+            kwargs: dict[str, Any] = {"file": p, "file_name": p.name}
+            if mime:
+                kwargs["mime_type"] = mime
+            return self._client.assets.upload(**kwargs)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to upload asset via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
     def send_message(
-        self, chat_id: str, text: str, reply_to_message_id: Optional[str] = None
+        self,
+        chat_id: str,
+        text: Optional[str] = None,
+        reply_to_message_id: Optional[str] = None,
+        attachment_path: "Optional[Path]" = None,
+        attachment_mime: Optional[str] = None,
     ) -> Any:
         try:
-            kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+            kwargs: dict[str, Any] = {"chat_id": chat_id}
+            if text is not None:
+                kwargs["text"] = text
             if reply_to_message_id is not None:
                 kwargs["reply_to_message_id"] = reply_to_message_id
+            if attachment_path is not None:
+                p = Path(attachment_path)
+                mime = attachment_mime or mimetypes.guess_type(p.name)[0]
+                up = self.upload_asset(p, mime_type=mime)
+                upload_id = self._get_attr(up, "upload_id", "uploadID", "id")
+                kwargs["attachment"] = {
+                    "upload_id": upload_id,
+                    "type": _attachment_type_for_mime(mime),
+                    "file_name": p.name,
+                }
+                if mime:
+                    kwargs["attachment"]["mime_type"] = mime
             return self._client.messages.send(**kwargs)
+        except BeeperSDKError:
+            raise
         except Exception as exc:
             raise BeeperSDKError(
                 f"Failed to send message via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def mark_read(self, chat_id: str) -> Any:
+        try:
+            return self._client.chats.mark_read(chat_id)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to mark chat read via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def mark_unread(self, chat_id: str) -> Any:
+        try:
+            return self._client.chats.mark_unread(chat_id)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to mark chat unread via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def add_reaction(self, chat_id: str, message_id: str, reaction_key: str) -> Any:
+        try:
+            return self._client.chats.messages.reactions.add(
+                message_id, chat_id=chat_id, reaction_key=reaction_key
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to add reaction via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def remove_reaction(self, chat_id: str, message_id: str, reaction_key: str) -> Any:
+        try:
+            return self._client.chats.messages.reactions.delete(
+                reaction_key, chat_id=chat_id, message_id=message_id
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to remove reaction via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def start_chat(
+        self, account_id: str, *, user: dict[str, str], message_text: Optional[str] = None
+    ) -> Any:
+        try:
+            kwargs: dict[str, Any] = {"account_id": account_id, "user": user}
+            if message_text:
+                kwargs["message_text"] = message_text
+            return self._client.chats.start(**kwargs)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to start chat via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc

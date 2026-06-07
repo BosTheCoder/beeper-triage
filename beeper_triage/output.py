@@ -29,3 +29,9 @@ def emit(data: Any, *, json_flag: Optional[bool] = None, human: Optional[str] = 
         print(json.dumps(data, default=str))
     else:
         print(human if human is not None else json.dumps(data, indent=2, default=str))
+
+
+def resolve_json_flag(agent: bool, json_flag: Optional[bool]) -> Optional[bool]:
+    """Agent mode always forces JSON; otherwise honour the explicit --json/--no-json
+    flag (None = auto-detect from TTY in is_json_mode)."""
+    return True if agent else json_flag
