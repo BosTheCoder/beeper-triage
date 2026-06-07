@@ -124,3 +124,163 @@ def test_send_message_with_attachment_builds_attachment():
     assert kwargs["attachment"]["type"] == "image"
     assert kwargs["attachment"]["mime_type"] == "image/png"
     assert kwargs["attachment"]["file_name"] == "pic.png"
+
+
+def test_edit_message_calls_sdk():
+    c = _adapter()
+    c.edit_message("!chat", "$msg", "new text")
+    c._client.messages.update.assert_called_once_with(
+        "$msg", chat_id="!chat", text="new text"
+    )
+
+
+def test_edit_message_wraps_errors():
+    c = _adapter()
+    c._client.messages.update.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.edit_message("!chat", "$msg", "x")
+
+
+def test_delete_message_calls_sdk_default():
+    c = _adapter()
+    c.delete_message("!chat", "$msg")
+    c._client.messages.delete.assert_called_once_with(
+        "$msg", chat_id="!chat", for_everyone=False
+    )
+
+
+def test_delete_message_for_everyone():
+    c = _adapter()
+    c.delete_message("!chat", "$msg", for_everyone=True)
+    c._client.messages.delete.assert_called_once_with(
+        "$msg", chat_id="!chat", for_everyone=True
+    )
+
+
+def test_delete_message_wraps_errors():
+    c = _adapter()
+    c._client.messages.delete.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.delete_message("!chat", "$msg")
+
+
+def test_get_message_calls_sdk():
+    c = _adapter()
+    c.get_message("!chat", "$msg")
+    c._client.messages.retrieve.assert_called_once_with("$msg", chat_id="!chat")
+
+
+def test_download_attachment_default_path(tmp_path, monkeypatch):
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png",
+                    mime_type="image/png", file_size=70)
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    monkeypatch.chdir(tmp_path)  # default out = file_name in cwd
+    result = c.download_attachment("!chat", "$msg")
+    c._client.assets.serve.assert_called_once_with(url="mxc://x")
+    c._client.assets.serve.return_value.write_to_file.assert_called_once()
+    assert result["file_name"] == "pic.png"
+    assert result["mime_type"] == "image/png"
+    assert result["path"].endswith("pic.png")
+
+
+def test_download_attachment_explicit_out(tmp_path):
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png",
+                    mime_type="image/png", file_size=70)
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    out = tmp_path / "saved.png"
+    result = c.download_attachment("!chat", "$msg", out_path=str(out))
+    c._client.assets.serve.return_value.write_to_file.assert_called_once_with(str(out))
+    assert result["path"] == str(out)
+
+
+def test_download_attachment_no_attachments():
+    c = _adapter()
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[])
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg")
+
+
+def test_download_attachment_bad_index():
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png")
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg", index=5)
+
+
+def test_raw_request_get_no_body():
+    c = _adapter()
+    c._client.get.return_value = {"ok": True}
+    out = c.raw_request("GET", "/v1/accounts")
+    c._client.get.assert_called_once_with("/v1/accounts", cast_to=object)
+    assert out == {"ok": True}
+
+
+def test_raw_request_get_with_query():
+    c = _adapter()
+    c.raw_request("get", "/v1/x", query={"limit": "5"})
+    c._client.get.assert_called_once_with(
+        "/v1/x", cast_to=object, options={"params": {"limit": "5"}}
+    )
+
+
+def test_raw_request_post_with_body():
+    c = _adapter()
+    c.raw_request("POST", "/v1/x", body={"a": 1})
+    c._client.post.assert_called_once_with("/v1/x", cast_to=object, body={"a": 1})
+
+
+def test_raw_request_rejects_unknown_method():
+    c = _adapter()
+    with pytest.raises(BeeperSDKError):
+        c.raw_request("TRACE", "/v1/x")
+
+
+def test_raw_request_wraps_errors():
+    c = _adapter()
+    c._client.get.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.raw_request("GET", "/v1/x")
+
+
+def test_raw_request_get_with_body_rejected():
+    c = _adapter()
+    with pytest.raises(BeeperSDKError):
+        c.raw_request("GET", "/v1/x", body={"a": 1})
+    c._client.get.assert_not_called()
+
+
+def test_get_message_wraps_errors():
+    c = _adapter()
+    c._client.messages.retrieve.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.get_message("!chat", "$msg")
+
+
+def test_download_attachment_no_src_url():
+    c = _adapter()
+    att = MagicMock(src_url=None, file_name="pic.png")
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg")
+
+
+def test_download_attachment_serve_fails():
+    c = _adapter()
+    att = MagicMock(src_url="mxc://x", file_name="pic.png")
+    c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
+    c._client.assets.serve.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.download_attachment("!chat", "$msg")
+
+
+def test_raw_request_error_includes_status():
+    c = _adapter()
+    err = RuntimeError("forbidden")
+    err.status_code = 403
+    c._client.get.side_effect = err
+    with pytest.raises(BeeperSDKError) as ei:
+        c.raw_request("GET", "/v1/x")
+    assert "403" in str(ei.value)

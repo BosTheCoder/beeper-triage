@@ -58,6 +58,7 @@ class BeeperClient:
     CACHE_DIR = os.path.expanduser("~/.cache/beeper-triage")
     CACHE_FILE = os.path.join(CACHE_DIR, "chats.json")
     CACHE_TTL_MS = 6 * 60 * 60 * 1000  # 6 hours in milliseconds
+    _RAW_METHODS = {"get", "post", "put", "patch", "delete"}
 
     def __init__(self, access_token: str, base_url: Optional[str] = None) -> None:
         try:
@@ -464,6 +465,117 @@ class BeeperClient:
         except Exception as exc:
             raise BeeperSDKError(
                 f"Failed to remove reaction via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def edit_message(self, chat_id: str, message_id: str, text: str) -> Any:
+        try:
+            return self._client.messages.update(
+                message_id, chat_id=chat_id, text=text
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to edit message via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def delete_message(
+        self, chat_id: str, message_id: str, for_everyone: bool = False
+    ) -> Any:
+        try:
+            return self._client.messages.delete(
+                message_id, chat_id=chat_id, for_everyone=for_everyone
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to delete message via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def get_message(self, chat_id: str, message_id: str) -> Any:
+        try:
+            return self._client.messages.retrieve(message_id, chat_id=chat_id)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to retrieve message via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def download_attachment(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        index: int = 0,
+        out_path: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Download one attachment from a message to disk.
+
+        Returns {path, file_name, mime_type, file_size}. Raises BeeperSDKError
+        if the message has no attachment at *index* or the serve/write fails.
+
+        Note: when an attachment has no ``file_name``, the fallback name is
+        ``"attachment"``.  Repeated downloads of such attachments to the default
+        path (cwd/attachment) will overwrite each other; pass ``out_path`` to
+        avoid this.
+        """
+        message = self.get_message(chat_id, message_id)
+        attachments = self._get_attr(message, "attachments", default=None) or []
+        if not attachments:
+            raise BeeperSDKError("Message has no attachments to download.")
+        if index < 0 or index >= len(attachments):
+            raise BeeperSDKError(
+                f"Attachment index {index} out of range (message has {len(attachments)})."
+            )
+        att = attachments[index]
+        src_url = self._get_attr(att, "src_url", "srcURL", default=None)
+        if not src_url:
+            raise BeeperSDKError("Attachment has no source URL.")
+        file_name = self._get_attr(att, "file_name", "fileName", default=None) or "attachment"
+        target = out_path or os.path.join(os.getcwd(), file_name)
+        try:
+            response = self._client.assets.serve(url=src_url)
+            response.write_to_file(target)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to download attachment via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+        return {
+            "path": target,
+            "file_name": file_name,
+            "mime_type": self._get_attr(att, "mime_type", "mimeType", default=None),
+            "file_size": self._get_attr(att, "file_size", "fileSize", default=None),
+        }
+
+    def raw_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: Optional[dict[str, Any]] = None,
+        body: Optional[Any] = None,
+    ) -> Any:
+        """Raw passthrough to any /v1 endpoint via the SDK's request pipeline.
+
+        Returns parsed JSON (dict/list) on success. Reuses the SDK's configured
+        auth + base URL so the WSL-proxy bootstrap applies unchanged.
+        """
+        verb = method.lower()
+        if verb not in self._RAW_METHODS:
+            raise BeeperSDKError(
+                f"Unsupported HTTP method: {method!r} (use GET/POST/PUT/PATCH/DELETE)."
+            )
+        fn = getattr(self._client, verb)
+        kwargs: dict[str, Any] = {"cast_to": object}
+        if query:
+            kwargs["options"] = {"params": query}
+        if body is not None:
+            if verb == "get":
+                raise BeeperSDKError("GET requests do not accept a body.")
+            kwargs["body"] = body
+        try:
+            return fn(path, **kwargs)
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            prefix = f"HTTP {status} " if status else ""
+            raise BeeperSDKError(
+                f"{prefix}{method.upper()} {path} failed: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
     def start_chat(

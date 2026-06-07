@@ -139,3 +139,189 @@ def test_send_command_error(monkeypatch):
     result = runner.invoke(app, ["send", "!chat", "--text", "hi", "--json"])
     assert result.exit_code == 1
     assert "error" in json.loads(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Task 9: wiring smoke test
+# ---------------------------------------------------------------------------
+
+def test_phase3_verbs_registered():
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    for verb in ("edit", "delete", "dl", "api"):
+        assert verb in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Task 8: api
+# ---------------------------------------------------------------------------
+
+def test_api_get(monkeypatch):
+    fake = MagicMock()
+    fake.raw_request.return_value = [{"accountID": "whatsapp"}]
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["api", "GET", "/v1/accounts", "--json"])
+    assert result.exit_code == 0
+    fake.raw_request.assert_called_once_with("GET", "/v1/accounts", query={}, body=None)
+    assert json.loads(result.stdout) == [{"accountID": "whatsapp"}]
+
+
+def test_api_get_with_query(monkeypatch):
+    fake = MagicMock()
+    fake.raw_request.return_value = {"items": []}
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(
+        app, ["api", "GET", "/v1/x", "--query", "limit=5", "--query", "q=hi", "--json"]
+    )
+    assert result.exit_code == 0
+    fake.raw_request.assert_called_once_with(
+        "GET", "/v1/x", query={"limit": "5", "q": "hi"}, body=None
+    )
+
+
+def test_api_post_with_body(monkeypatch):
+    fake = MagicMock()
+    fake.raw_request.return_value = {"ok": True}
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(
+        app, ["api", "POST", "/v1/x", "--body", '{"a": 1}', "--json"]
+    )
+    assert result.exit_code == 0
+    fake.raw_request.assert_called_once_with("POST", "/v1/x", query={}, body={"a": 1})
+
+
+def test_api_bad_query_item(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["api", "GET", "/v1/x", "--query", "noequals", "--json"])
+    assert result.exit_code == 2
+    fake.raw_request.assert_not_called()
+
+
+def test_api_bad_body_json(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["api", "POST", "/v1/x", "--body", "{not json", "--json"])
+    assert result.exit_code == 2
+    fake.raw_request.assert_not_called()
+
+
+def test_api_error(monkeypatch):
+    fake = MagicMock()
+    fake.raw_request.side_effect = BeeperSDKError("HTTP 404 ...")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["api", "GET", "/v1/nope", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)
+
+
+def test_api_get_with_body_rejected(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["api", "GET", "/v1/x", "--body", '{"a":1}', "--json"])
+    assert result.exit_code == 2
+    fake.raw_request.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 7: dl
+# ---------------------------------------------------------------------------
+
+def test_dl_command(monkeypatch):
+    fake = MagicMock()
+    fake.download_attachment.return_value = {
+        "path": "/tmp/pic.png", "file_name": "pic.png",
+        "mime_type": "image/png", "file_size": 70,
+    }
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["dl", "!chat", "$msg", "--json"])
+    assert result.exit_code == 0
+    fake.download_attachment.assert_called_once_with("!chat", "$msg", index=0, out_path=None)
+    out = json.loads(result.stdout)
+    assert out["path"] == "/tmp/pic.png"
+    assert out["status"] == "downloaded"
+
+
+def test_dl_command_with_out_and_index(monkeypatch):
+    fake = MagicMock()
+    fake.download_attachment.return_value = {"path": "/tmp/x", "file_name": "x"}
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(
+        app, ["dl", "!chat", "$msg", "--out", "/tmp/x", "--index", "2", "--json"]
+    )
+    assert result.exit_code == 0
+    fake.download_attachment.assert_called_once_with("!chat", "$msg", index=2, out_path="/tmp/x")
+
+
+def test_dl_command_error(monkeypatch):
+    fake = MagicMock()
+    fake.download_attachment.side_effect = BeeperSDKError("no attachments")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["dl", "!chat", "$msg", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Task 6: delete
+# ---------------------------------------------------------------------------
+
+def test_delete_command(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["delete", "!chat", "$msg", "--json"])
+    assert result.exit_code == 0
+    fake.delete_message.assert_called_once_with("!chat", "$msg", for_everyone=False)
+    out = json.loads(result.stdout)
+    assert out == {"chatID": "!chat", "messageID": "$msg",
+                   "forEveryone": False, "status": "deleted"}
+
+
+def test_delete_command_for_everyone(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(
+        app, ["delete", "!chat", "$msg", "--for-everyone", "--json"]
+    )
+    assert result.exit_code == 0
+    fake.delete_message.assert_called_once_with("!chat", "$msg", for_everyone=True)
+    assert json.loads(result.stdout)["forEveryone"] is True
+
+
+def test_delete_command_error(monkeypatch):
+    fake = MagicMock()
+    fake.delete_message.side_effect = BeeperSDKError("nope")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["delete", "!chat", "$msg", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: edit
+# ---------------------------------------------------------------------------
+
+def test_edit_command(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["edit", "!chat", "$msg", "fixed text", "--json"])
+    assert result.exit_code == 0
+    fake.edit_message.assert_called_once_with("!chat", "$msg", "fixed text")
+    out = json.loads(result.stdout)
+    assert out == {"chatID": "!chat", "messageID": "$msg", "status": "edited"}
+
+
+def test_edit_command_error(monkeypatch):
+    fake = MagicMock()
+    fake.edit_message.side_effect = BeeperSDKError("nope")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["edit", "!chat", "$msg", "x", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)
+
+
+def test_parse_query_pairs_edge_cases():
+    from beeper_triage.verbs import _parse_query_pairs
+    assert _parse_query_pairs(["k="]) == {"k": ""}
+    assert _parse_query_pairs(["k=a=b"]) == {"k": "a=b"}
+    assert _parse_query_pairs(["f=1", "f=2"]) == {"f": "2"}

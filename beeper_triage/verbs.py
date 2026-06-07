@@ -1,6 +1,7 @@
-"""Tier-1 Beeper verbs (send/react/mark-read/start), registered onto the CLI app."""
+"""Beeper CLI verbs — all commands registered onto the Typer app."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -143,6 +144,128 @@ def _send(
          json_flag=eff_json, human=f"Sent to {chat_id} (pending {pending_id}).")
 
 
+def _parse_query_pairs(pairs: list[str]) -> dict[str, str]:
+    """Parse repeated KEY=VALUE strings into a dict. Raises ValueError on a bad item.
+
+    Repeated keys: last value wins (consistent with urllib query-string semantics).
+    """
+    out: dict[str, str] = {}
+    for item in pairs:
+        if "=" not in item:
+            raise ValueError(f"Bad --query item {item!r}; expected KEY=VALUE.")
+        key, value = item.split("=", 1)
+        out[key] = value
+    return out
+
+
+def _api(
+    method: str = typer.Argument(..., help="HTTP method: GET/POST/PUT/PATCH/DELETE."),
+    path: str = typer.Argument(..., help="API path, e.g. /v1/accounts."),
+    query: list[str] = typer.Option(
+        [], "--query", "-q", help="Repeatable KEY=VALUE query parameter."
+    ),
+    body: Optional[str] = typer.Option(
+        None, "--body", help="JSON request body (for POST/PUT/PATCH/DELETE)."
+    ),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Raw passthrough to any Beeper /v1 endpoint (escape hatch for ops with no verb)."""
+    eff_json = resolve_json_flag(agent, json_)
+    try:
+        query_dict = _parse_query_pairs(query)
+    except ValueError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=str(exc))
+        raise typer.Exit(code=2)
+    body_obj = None
+    if body is not None:
+        try:
+            body_obj = json.loads(body)
+        except json.JSONDecodeError as exc:
+            msg = f"Invalid --body JSON: {exc}"
+            emit({"error": msg}, json_flag=eff_json, human=msg)
+            raise typer.Exit(code=2)
+    if body_obj is not None and method.upper() == "GET":
+        msg = "GET requests do not accept a body."
+        emit({"error": msg}, json_flag=eff_json, human=msg)
+        raise typer.Exit(code=2)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        result = client.raw_request(method, path, query=query_dict, body=body_obj)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    emit(result, json_flag=eff_json, human=json.dumps(result, indent=2, default=str))
+
+
+def _dl(
+    chat_id: str = typer.Argument(..., help="Chat ID."),
+    message_id: str = typer.Argument(..., help="Message ID with the attachment."),
+    out: Optional[str] = typer.Option(
+        None, "--out", help="Output path (default: the attachment's own filename in cwd)."
+    ),
+    index: int = typer.Option(
+        0, "--index", help="Which attachment to download if the message has several."
+    ),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Download an incoming attachment (image/file/etc.) to disk."""
+    eff_json = resolve_json_flag(agent, json_)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        result = client.download_attachment(chat_id, message_id, index=index, out_path=out)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    emit({**result, "status": "downloaded"},
+         json_flag=eff_json, human=f"Downloaded to {result['path']}.")
+
+
+def _delete(
+    chat_id: str = typer.Argument(..., help="Chat ID."),
+    message_id: str = typer.Argument(..., help="Message ID to delete."),
+    for_everyone: bool = typer.Option(
+        False, "--for-everyone", help="Unsend for everyone (not just yourself)."
+    ),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Delete (unsend) a message."""
+    eff_json = resolve_json_flag(agent, json_)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        client.delete_message(chat_id, message_id, for_everyone=for_everyone)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    emit(
+        {"chatID": chat_id, "messageID": message_id,
+         "forEveryone": for_everyone, "status": "deleted"},
+        json_flag=eff_json,
+        human=f"Deleted {message_id}" + (" for everyone." if for_everyone else "."),
+    )
+
+
+def _edit(
+    chat_id: str = typer.Argument(..., help="Chat ID."),
+    message_id: str = typer.Argument(..., help="Message ID to edit."),
+    text: str = typer.Argument(..., help="New message text."),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Edit the text of a message you sent."""
+    eff_json = resolve_json_flag(agent, json_)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        client.edit_message(chat_id, message_id, text)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    emit({"chatID": chat_id, "messageID": message_id, "status": "edited"},
+         json_flag=eff_json, human=f"Edited {message_id}.")
+
+
 def register(app: typer.Typer) -> None:
     """Attach the Tier-1 verb commands to the given Typer app."""
     app.command("mark-read")(_mark_read)
@@ -150,3 +273,7 @@ def register(app: typer.Typer) -> None:
     app.command("react")(_react)
     app.command("start")(_start)
     app.command("send")(_send)
+    app.command("api")(_api)
+    app.command("dl")(_dl)
+    app.command("delete")(_delete)
+    app.command("edit")(_edit)
