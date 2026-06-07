@@ -139,3 +139,26 @@ def test_send_command_error(monkeypatch):
     result = runner.invoke(app, ["send", "!chat", "--text", "hi", "--json"])
     assert result.exit_code == 1
     assert "error" in json.loads(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: edit
+# ---------------------------------------------------------------------------
+
+def test_edit_command(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["edit", "!chat", "$msg", "fixed text", "--json"])
+    assert result.exit_code == 0
+    fake.edit_message.assert_called_once_with("!chat", "$msg", "fixed text")
+    out = json.loads(result.stdout)
+    assert out == {"chatID": "!chat", "messageID": "$msg", "status": "edited"}
+
+
+def test_edit_command_error(monkeypatch):
+    fake = MagicMock()
+    fake.edit_message.side_effect = BeeperSDKError("nope")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["edit", "!chat", "$msg", "x", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)

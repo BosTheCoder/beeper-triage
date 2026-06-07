@@ -143,6 +143,25 @@ def _send(
          json_flag=eff_json, human=f"Sent to {chat_id} (pending {pending_id}).")
 
 
+def _edit(
+    chat_id: str = typer.Argument(..., help="Chat ID."),
+    message_id: str = typer.Argument(..., help="Message ID to edit."),
+    text: str = typer.Argument(..., help="New message text."),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Edit the text of a message you sent."""
+    eff_json = resolve_json_flag(agent, json_)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        client.edit_message(chat_id, message_id, text)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    emit({"chatID": chat_id, "messageID": message_id, "status": "edited"},
+         json_flag=eff_json, human=f"Edited {message_id}.")
+
+
 def register(app: typer.Typer) -> None:
     """Attach the Tier-1 verb commands to the given Typer app."""
     app.command("mark-read")(_mark_read)
@@ -150,3 +169,4 @@ def register(app: typer.Typer) -> None:
     app.command("react")(_react)
     app.command("start")(_start)
     app.command("send")(_send)
+    app.command("edit")(_edit)
