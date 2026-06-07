@@ -143,6 +143,31 @@ def _send(
          json_flag=eff_json, human=f"Sent to {chat_id} (pending {pending_id}).")
 
 
+def _delete(
+    chat_id: str = typer.Argument(..., help="Chat ID."),
+    message_id: str = typer.Argument(..., help="Message ID to delete."),
+    for_everyone: bool = typer.Option(
+        False, "--for-everyone", help="Unsend for everyone (not just yourself)."
+    ),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Delete (unsend) a message."""
+    eff_json = resolve_json_flag(agent, json_)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        client.delete_message(chat_id, message_id, for_everyone=for_everyone)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    emit(
+        {"chatID": chat_id, "messageID": message_id,
+         "forEveryone": for_everyone, "status": "deleted"},
+        json_flag=eff_json,
+        human=f"Deleted {message_id}" + (" for everyone." if for_everyone else "."),
+    )
+
+
 def _edit(
     chat_id: str = typer.Argument(..., help="Chat ID."),
     message_id: str = typer.Argument(..., help="Message ID to edit."),
@@ -169,4 +194,5 @@ def register(app: typer.Typer) -> None:
     app.command("react")(_react)
     app.command("start")(_start)
     app.command("send")(_send)
+    app.command("delete")(_delete)
     app.command("edit")(_edit)
