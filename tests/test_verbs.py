@@ -142,6 +142,17 @@ def test_send_command_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Task 9: wiring smoke test
+# ---------------------------------------------------------------------------
+
+def test_phase3_verbs_registered():
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    for verb in ("edit", "delete", "dl", "api"):
+        assert verb in result.stdout
+
+
+# ---------------------------------------------------------------------------
 # Task 8: api
 # ---------------------------------------------------------------------------
 
