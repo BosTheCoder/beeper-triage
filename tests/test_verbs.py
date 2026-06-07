@@ -215,6 +215,14 @@ def test_api_error(monkeypatch):
     assert "error" in json.loads(result.stdout)
 
 
+def test_api_get_with_body_rejected(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["api", "GET", "/v1/x", "--body", '{"a":1}', "--json"])
+    assert result.exit_code == 2
+    fake.raw_request.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Task 7: dl
 # ---------------------------------------------------------------------------
@@ -310,3 +318,10 @@ def test_edit_command_error(monkeypatch):
     result = runner.invoke(app, ["edit", "!chat", "$msg", "x", "--json"])
     assert result.exit_code == 1
     assert "error" in json.loads(result.stdout)
+
+
+def test_parse_query_pairs_edge_cases():
+    from beeper_triage.verbs import _parse_query_pairs
+    assert _parse_query_pairs(["k="]) == {"k": ""}
+    assert _parse_query_pairs(["k=a=b"]) == {"k": "a=b"}
+    assert _parse_query_pairs(["f=1", "f=2"]) == {"f": "2"}

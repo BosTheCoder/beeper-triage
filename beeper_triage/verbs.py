@@ -1,4 +1,4 @@
-"""Tier-1 Beeper verbs (send/react/mark-read/start), registered onto the CLI app."""
+"""Beeper CLI verbs — all commands registered onto the Typer app."""
 from __future__ import annotations
 
 import json
@@ -145,7 +145,10 @@ def _send(
 
 
 def _parse_query_pairs(pairs: list[str]) -> dict[str, str]:
-    """Parse repeated KEY=VALUE strings into a dict. Raises ValueError on a bad item."""
+    """Parse repeated KEY=VALUE strings into a dict. Raises ValueError on a bad item.
+
+    Repeated keys: last value wins (consistent with urllib query-string semantics).
+    """
     out: dict[str, str] = {}
     for item in pairs:
         if "=" not in item:
@@ -182,6 +185,10 @@ def _api(
             msg = f"Invalid --body JSON: {exc}"
             emit({"error": msg}, json_flag=eff_json, human=msg)
             raise typer.Exit(code=2)
+    if body_obj is not None and method.upper() == "GET":
+        msg = "GET requests do not accept a body."
+        emit({"error": msg}, json_flag=eff_json, human=msg)
+        raise typer.Exit(code=2)
     client = build_client_or_exit(agent=agent, json_flag=json_)
     try:
         result = client.raw_request(method, path, query=query_dict, body=body_obj)
