@@ -208,3 +208,38 @@ def test_download_attachment_bad_index():
     c._client.messages.retrieve.return_value = MagicMock(attachments=[att])
     with pytest.raises(BeeperSDKError):
         c.download_attachment("!chat", "$msg", index=5)
+
+
+def test_raw_request_get_no_body():
+    c = _adapter()
+    c._client.get.return_value = {"ok": True}
+    out = c.raw_request("GET", "/v1/accounts")
+    c._client.get.assert_called_once_with("/v1/accounts", cast_to=object)
+    assert out == {"ok": True}
+
+
+def test_raw_request_get_with_query():
+    c = _adapter()
+    c.raw_request("get", "/v1/x", query={"limit": "5"})
+    c._client.get.assert_called_once_with(
+        "/v1/x", cast_to=object, options={"params": {"limit": "5"}}
+    )
+
+
+def test_raw_request_post_with_body():
+    c = _adapter()
+    c.raw_request("POST", "/v1/x", body={"a": 1})
+    c._client.post.assert_called_once_with("/v1/x", cast_to=object, body={"a": 1})
+
+
+def test_raw_request_rejects_unknown_method():
+    c = _adapter()
+    with pytest.raises(BeeperSDKError):
+        c.raw_request("TRACE", "/v1/x")
+
+
+def test_raw_request_wraps_errors():
+    c = _adapter()
+    c._client.get.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.raw_request("GET", "/v1/x")

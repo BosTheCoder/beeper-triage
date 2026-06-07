@@ -56,6 +56,7 @@ class BeeperClient:
     """Thin wrapper around the official beeper_desktop_api SDK."""
 
     CACHE_DIR = os.path.expanduser("~/.cache/beeper-triage")
+    _RAW_METHODS = {"get", "post", "put", "patch", "delete"}
     CACHE_FILE = os.path.join(CACHE_DIR, "chats.json")
     CACHE_TTL_MS = 6 * 60 * 60 * 1000  # 6 hours in milliseconds
 
@@ -536,6 +537,39 @@ class BeeperClient:
             "mime_type": self._get_attr(att, "mime_type", "mimeType", default=None),
             "file_size": self._get_attr(att, "file_size", "fileSize", default=None),
         }
+
+    def raw_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: Optional[dict[str, Any]] = None,
+        body: Optional[Any] = None,
+    ) -> Any:
+        """Raw passthrough to any /v1 endpoint via the SDK's request pipeline.
+
+        Returns parsed JSON (dict/list) on success. Reuses the SDK's configured
+        auth + base URL so the WSL-proxy bootstrap applies unchanged.
+        """
+        verb = method.lower()
+        if verb not in self._RAW_METHODS:
+            raise BeeperSDKError(
+                f"Unsupported HTTP method: {method!r} (use GET/POST/PUT/PATCH/DELETE)."
+            )
+        fn = getattr(self._client, verb)
+        kwargs: dict[str, Any] = {"cast_to": object}
+        if query:
+            kwargs["options"] = {"params": query}
+        if body is not None and verb != "get":
+            kwargs["body"] = body
+        try:
+            return fn(path, **kwargs)
+        except Exception as exc:
+            status = getattr(exc, "status_code", None)
+            prefix = f"HTTP {status} " if status else ""
+            raise BeeperSDKError(
+                f"{prefix}{method.upper()} {path} failed: {type(exc).__name__}: {str(exc)}"
+            ) from exc
 
     def start_chat(
         self, account_id: str, *, user: dict[str, str], message_text: Optional[str] = None
