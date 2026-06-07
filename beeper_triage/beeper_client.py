@@ -466,6 +466,16 @@ class BeeperClient:
                 f"Failed to remove reaction via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
+    def edit_message(self, chat_id: str, message_id: str, text: str) -> Any:
+        try:
+            return self._client.messages.update(
+                message_id, chat_id=chat_id, text=text
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to edit message via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
     def start_chat(
         self, account_id: str, *, user: dict[str, str], message_text: Optional[str] = None
     ) -> Any:

@@ -124,3 +124,18 @@ def test_send_message_with_attachment_builds_attachment():
     assert kwargs["attachment"]["type"] == "image"
     assert kwargs["attachment"]["mime_type"] == "image/png"
     assert kwargs["attachment"]["file_name"] == "pic.png"
+
+
+def test_edit_message_calls_sdk():
+    c = _adapter()
+    c.edit_message("!chat", "$msg", "new text")
+    c._client.messages.update.assert_called_once_with(
+        "$msg", chat_id="!chat", text="new text"
+    )
+
+
+def test_edit_message_wraps_errors():
+    c = _adapter()
+    c._client.messages.update.side_effect = RuntimeError("boom")
+    with pytest.raises(BeeperSDKError):
+        c.edit_message("!chat", "$msg", "x")
