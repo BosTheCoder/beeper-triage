@@ -143,6 +143,30 @@ def _send(
          json_flag=eff_json, human=f"Sent to {chat_id} (pending {pending_id}).")
 
 
+def _dl(
+    chat_id: str = typer.Argument(..., help="Chat ID."),
+    message_id: str = typer.Argument(..., help="Message ID with the attachment."),
+    out: Optional[str] = typer.Option(
+        None, "--out", help="Output path (default: the attachment's own filename in cwd)."
+    ),
+    index: int = typer.Option(
+        0, "--index", help="Which attachment to download if the message has several."
+    ),
+    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
+    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
+) -> None:
+    """Download an incoming attachment (image/file/etc.) to disk."""
+    eff_json = resolve_json_flag(agent, json_)
+    client = build_client_or_exit(agent=agent, json_flag=json_)
+    try:
+        result = client.download_attachment(chat_id, message_id, index=index, out_path=out)
+    except BeeperSDKError as exc:
+        emit({"error": str(exc)}, json_flag=eff_json, human=f"Error: {exc}")
+        raise typer.Exit(code=1)
+    emit({**result, "status": "downloaded"},
+         json_flag=eff_json, human=f"Downloaded to {result['path']}.")
+
+
 def _delete(
     chat_id: str = typer.Argument(..., help="Chat ID."),
     message_id: str = typer.Argument(..., help="Message ID to delete."),
@@ -194,5 +218,6 @@ def register(app: typer.Typer) -> None:
     app.command("react")(_react)
     app.command("start")(_start)
     app.command("send")(_send)
+    app.command("dl")(_dl)
     app.command("delete")(_delete)
     app.command("edit")(_edit)

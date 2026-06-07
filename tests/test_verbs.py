@@ -142,6 +142,45 @@ def test_send_command_error(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Task 7: dl
+# ---------------------------------------------------------------------------
+
+def test_dl_command(monkeypatch):
+    fake = MagicMock()
+    fake.download_attachment.return_value = {
+        "path": "/tmp/pic.png", "file_name": "pic.png",
+        "mime_type": "image/png", "file_size": 70,
+    }
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["dl", "!chat", "$msg", "--json"])
+    assert result.exit_code == 0
+    fake.download_attachment.assert_called_once_with("!chat", "$msg", index=0, out_path=None)
+    out = json.loads(result.stdout)
+    assert out["path"] == "/tmp/pic.png"
+    assert out["status"] == "downloaded"
+
+
+def test_dl_command_with_out_and_index(monkeypatch):
+    fake = MagicMock()
+    fake.download_attachment.return_value = {"path": "/tmp/x", "file_name": "x"}
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(
+        app, ["dl", "!chat", "$msg", "--out", "/tmp/x", "--index", "2", "--json"]
+    )
+    assert result.exit_code == 0
+    fake.download_attachment.assert_called_once_with("!chat", "$msg", index=2, out_path="/tmp/x")
+
+
+def test_dl_command_error(monkeypatch):
+    fake = MagicMock()
+    fake.download_attachment.side_effect = BeeperSDKError("no attachments")
+    monkeypatch.setattr("beeper_triage.verbs.build_client_or_exit", lambda **k: fake)
+    result = runner.invoke(app, ["dl", "!chat", "$msg", "--json"])
+    assert result.exit_code == 1
+    assert "error" in json.loads(result.stdout)
+
+
+# ---------------------------------------------------------------------------
 # Task 6: delete
 # ---------------------------------------------------------------------------
 
