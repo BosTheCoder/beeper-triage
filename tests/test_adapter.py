@@ -284,3 +284,39 @@ def test_raw_request_error_includes_status():
     with pytest.raises(BeeperSDKError) as ei:
         c.raw_request("GET", "/v1/x")
     assert "403" in str(ei.value)
+
+
+def _account_stub(account_id, network):
+    a = MagicMock()
+    a.account_id = account_id
+    a.network = network
+    a.user = None
+    return a
+
+
+def test_list_accounts_caches_to_disk(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        BeeperClient, "ACCOUNTS_CACHE_FILE", str(tmp_path / "accounts.json")
+    )
+    c = _adapter()
+    c._client.accounts.list.return_value = [_account_stub("acc1", "WhatsApp")]
+
+    first = c.list_accounts()
+    assert first == {"acc1": ("WhatsApp", "acc1")}
+
+    # Second call: even if the SDK would now return nothing, the cache serves it.
+    c._client.accounts.list.return_value = []
+    second = c.list_accounts()
+    assert second == {"acc1": ("WhatsApp", "acc1")}
+    assert c._client.accounts.list.call_count == 1
+
+
+def test_list_accounts_use_cache_false_bypasses(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        BeeperClient, "ACCOUNTS_CACHE_FILE", str(tmp_path / "accounts.json")
+    )
+    c = _adapter()
+    c._client.accounts.list.return_value = [_account_stub("acc1", "WhatsApp")]
+    c.list_accounts()
+    c.list_accounts(use_cache=False)
+    assert c._client.accounts.list.call_count == 2

@@ -50,6 +50,7 @@ class BeeperChat:
     account_id: Optional[str] = None
     network_type: Optional[str] = None
     account_label: Optional[str] = None  # User-friendly account identifier
+    is_group: bool = False  # True for group chats (type == "group")
 
 
 class BeeperClient:
@@ -58,6 +59,8 @@ class BeeperClient:
     CACHE_DIR = os.path.expanduser("~/.cache/beeper-triage")
     CACHE_FILE = os.path.join(CACHE_DIR, "chats.json")
     CACHE_TTL_MS = 6 * 60 * 60 * 1000  # 6 hours in milliseconds
+    ACCOUNTS_CACHE_FILE = os.path.join(CACHE_DIR, "accounts.json")
+    ACCOUNTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000  # 24 hours — accounts rarely change
     _RAW_METHODS = {"get", "post", "put", "patch", "delete"}
 
     def __init__(self, access_token: str, base_url: Optional[str] = None) -> None:
@@ -110,6 +113,7 @@ class BeeperClient:
                         "account_id": chat.account_id,
                         "network_type": chat.network_type,
                         "account_label": chat.account_label,
+                        "is_group": chat.is_group,
                     }
                     for chat in chats
                 ],
@@ -199,14 +203,51 @@ class BeeperClient:
                     last_activity_ms=last_activity_ms,
                     account_id=account_id,
                     network_type=None,  # Will be populated in CLI from account mapping
+                    is_group=(chat_type == "group"),
                 )
             )
 
         self._save_cache(results)
         return results
 
-    def list_accounts(self) -> dict[str, tuple[str, str]]:
+    def _get_accounts_cache(self) -> Optional[dict[str, tuple[str, str]]]:
+        """Load the account map from cache if present and not expired."""
+        if not os.path.exists(self.ACCOUNTS_CACHE_FILE):
+            return None
+        try:
+            with open(self.ACCOUNTS_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            timestamp_ms = data.get("timestamp", 0)
+            now_ms = int(datetime.datetime.now().timestamp() * 1000)
+            if now_ms - timestamp_ms > self.ACCOUNTS_CACHE_TTL_MS:
+                return None
+            return {
+                acct_id: (net, label)
+                for acct_id, (net, label) in data.get("accounts", {}).items()
+            }
+        except Exception:
+            return None
+
+    def _save_accounts_cache(self, mapping: dict[str, tuple[str, str]]) -> None:
+        """Persist the account map with the current timestamp."""
+        try:
+            os.makedirs(self.CACHE_DIR, exist_ok=True)
+            timestamp_ms = int(datetime.datetime.now().timestamp() * 1000)
+            data = {
+                "timestamp": timestamp_ms,
+                "accounts": {k: list(v) for k, v in mapping.items()},
+            }
+            with open(self.ACCOUNTS_CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def list_accounts(self, use_cache: bool = True) -> dict[str, tuple[str, str]]:
         """Get mapping of account_id -> (network name, account label)."""
+        if use_cache:
+            cached = self._get_accounts_cache()
+            if cached is not None:
+                return cached
         try:
             accounts = self._client.accounts.list()
             mapping: dict[str, tuple[str, str]] = {}
@@ -250,6 +291,7 @@ class BeeperClient:
                     label = " • ".join(label_parts) if label_parts else str(account_id)[-8:]
 
                     mapping[str(account_id)] = (str(network), label)
+            self._save_accounts_cache(mapping)
             return mapping
         except Exception as exc:
             raise BeeperSDKError(

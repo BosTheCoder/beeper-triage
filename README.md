@@ -52,8 +52,17 @@ beeper triage --no-llm --dry-run
 # Include muted chats
 beeper triage --include-muted
 
-# Only chats where someone else sent the last message
-beeper triage --needs-reply-only
+# Filter by network (repeatable; aliases like wa/tg/ig accepted)
+beeper triage --network whatsapp
+beeper triage --network whatsapp --network telegram
+
+# Only unread chats / only chats you owe a reply to (filters combine with AND)
+beeper triage --unread
+beeper triage --unreplied
+beeper triage --network whatsapp --unread
+
+# Only 1:1 chats (hide group chats)
+beeper triage --no-groups
 
 # Force refresh the chat cache (bypasses 6-hour TTL)
 beeper triage --refresh-chats
@@ -62,6 +71,25 @@ beeper triage --refresh-chats
 beeper triage --guidance close
 beeper triage --guidance "ask about the weekend"
 ```
+
+### Interactive picker
+
+In the fzf chat picker, each `[network]` tag is colour-coded (WhatsApp green,
+Telegram cyan, Instagram magenta, LinkedIn blue, X white, Google Messages
+bright-blue, Beeper yellow). Live filter shortcuts:
+
+- **alt-u** — unread chats only
+- **alt-r** — unreplied chats only (you owe a reply)
+- **alt-g** — 1:1 chats only (hide groups)
+- **alt-a** — reset to all
+- **type a network name** (e.g. `whatsapp`) to filter by network — the tag is part of each row
+
+Launch flags (`--network`, `--unread`, `--unreplied`, `--no-groups`) are
+preserved as the base view, so the live toggles filter within them.
+
+Regional-indicator flag emojis in titles (e.g. 🇱🇨) are shown as their letter
+code (`[LC]`) because terminals compute their display width inconsistently and
+garble the row; all other emojis are left as-is.
 
 After selecting a chat, the CLI prompts for a message window (today, 2d, 7d, 14d, 30d, 60d, 365d, all).
 Use `--message-window` to skip the prompt. `--max-messages` is an optional safety cap.

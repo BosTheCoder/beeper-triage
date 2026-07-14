@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 from typing import Iterable, Optional
@@ -83,17 +84,125 @@ def _ensure_fzf() -> None:
         raise typer.BadParameter("Missing dependency: fzf is not on PATH.")
 
 
+# Canonical network slug -> display colour for the [network] tag in the picker.
+# fzf runs with --ansi so these codes render.  Unknown networks fall back to
+# WHITE.
+_NETWORK_COLORS: dict[str, str] = {
+    "whatsapp": typer.colors.GREEN,
+    "telegram": typer.colors.CYAN,
+    "instagram": typer.colors.MAGENTA,
+    "linkedin": typer.colors.BLUE,
+    "x": typer.colors.BRIGHT_WHITE,
+    "gmessages": typer.colors.BRIGHT_BLUE,
+    "beeper": typer.colors.YELLOW,
+    "signal": typer.colors.BRIGHT_CYAN,
+    "imessage": typer.colors.BRIGHT_GREEN,
+    "messenger": typer.colors.BRIGHT_MAGENTA,
+}
+
+# Free-text input (or a chat's network display name) -> canonical slug.
+_NETWORK_ALIASES: dict[str, str] = {
+    "whatsapp": "whatsapp",
+    "wa": "whatsapp",
+    "telegram": "telegram",
+    "tg": "telegram",
+    "instagram": "instagram",
+    "instagramgo": "instagram",
+    "ig": "instagram",
+    "insta": "instagram",
+    "linkedin": "linkedin",
+    "li": "linkedin",
+    "x": "x",
+    "twitter": "x",
+    "gmessages": "gmessages",
+    "google messages": "gmessages",
+    "googlemessages": "gmessages",
+    "google": "gmessages",
+    "sms": "gmessages",
+    "beeper": "beeper",
+    "matrix": "beeper",
+    "signal": "signal",
+    "imessage": "imessage",
+    "imsg": "imessage",
+    "messenger": "messenger",
+    "facebook": "messenger",
+    "fb": "messenger",
+}
+
+
+def _network_slug(value: Optional[str]) -> str:
+    """Fold a network display name or alias to a canonical slug.
+
+    Best-effort: an unknown network returns its cleaned lowercase form so
+    filtering by exact match still works and colouring can fall back to a
+    default.  Never raises — used for both chats and user input.
+    """
+    if not value:
+        return ""
+    cleaned = " ".join(value.strip().lower().split())
+    return _NETWORK_ALIASES.get(cleaned, cleaned)
+
+
+def _normalize_network_filter(value: str) -> str:
+    """Normalize a --network flag value; raise BadParameter if unknown."""
+    slug = _network_slug(value)
+    known = set(_NETWORK_ALIASES.values())
+    if slug not in known:
+        valid = ", ".join(sorted(known))
+        raise typer.BadParameter(
+            f"Unknown network: {value!r}. Use one of: {valid}."
+        )
+    return slug
+
+
+def _network_color(network_type: Optional[str]) -> str:
+    """Return the typer colour for a chat's network, defaulting to WHITE."""
+    return _NETWORK_COLORS.get(_network_slug(network_type), typer.colors.WHITE)
+
+
+_REGIONAL_INDICATOR_A = 0x1F1E6  # 🇦 ; the block runs to 🇿 (0x1F1FF)
+
+
+def _deflag(text: str) -> str:
+    """Replace regional-indicator flag emojis with their `[XX]` letter codes.
+
+    Flag emojis (e.g. 🇱🇨) are pairs of regional-indicator symbols whose
+    display width terminals compute inconsistently, garbling the picker row.
+    Normal emojis are left untouched.  Adjacent flags are chunked into pairs
+    (🇬🇧🇺🇸 → [GB][US]).
+    """
+    def _letter(ch: str) -> str:
+        return chr(ord("A") + ord(ch) - _REGIONAL_INDICATOR_A)
+
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if _REGIONAL_INDICATOR_A <= ord(text[i]) <= 0x1F1FF:
+            letters: list[str] = []
+            while i < n and _REGIONAL_INDICATOR_A <= ord(text[i]) <= 0x1F1FF:
+                letters.append(_letter(text[i]))
+                i += 1
+            for k in range(0, len(letters), 2):
+                out.append("[" + "".join(letters[k:k + 2]) + "]")
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
 def _format_chat_display(
     chat: "BeeperChat", show_account_label: bool = False
 ) -> str:
     """Format a chat for display in FZF with account and network info."""
-    parts = [chat.title]
+    parts = [_deflag(chat.title)]
     if chat.network_type:
+        color = _network_color(chat.network_type)
         if show_account_label and chat.account_label:
             # Show account label when there are multiple accounts for the same network
-            parts.append(f"[{chat.network_type} • {chat.account_label}]")
+            tag = f"[{chat.network_type} • {chat.account_label}]"
         else:
-            parts.append(f"[{chat.network_type}]")
+            tag = f"[{chat.network_type}]"
+        parts.append(typer.style(tag, fg=color))
     if chat.unread_count > 0:
         parts.append(f"({chat.unread_count} new)")
 
@@ -118,25 +227,119 @@ def _format_chat_display(
     return " ".join(parts)
 
 
-def _pick_chat_fzf(chats: list["BeeperChat"]) -> Optional[str]:
-    if not chats:
-        return None
+def _needs_reply(preview_is_sender: bool) -> bool:
+    return not preview_is_sender
 
-    # Check if there are multiple accounts with the same network
+
+def _filter_chats(
+    chats: list["BeeperChat"],
+    *,
+    include_muted: bool,
+    networks: set[str],
+    unread: bool,
+    unreplied: bool,
+    no_groups: bool = False,
+) -> list["BeeperChat"]:
+    """Apply the mute / network / unread / unreplied / group filters (all ANDed)."""
+    out: list["BeeperChat"] = []
+    for chat in chats:
+        if not include_muted and chat.is_muted:
+            continue
+        if no_groups and chat.is_group:
+            continue
+        if networks and _network_slug(chat.network_type) not in networks:
+            continue
+        if unread and chat.unread_count <= 0:
+            continue
+        if unreplied and not _needs_reply(chat.preview_is_sender):
+            continue
+        out.append(chat)
+    return out
+
+
+def _render_fzf_lines(chats: list["BeeperChat"]) -> str:
+    """Render chats as tab-separated `chat_id\\tdisplay` lines for fzf."""
+    # Show account labels only when a network has multiple accounts.
     network_counts: dict[str, int] = {}
     for chat in chats:
         if chat.network_type:
             network_counts[chat.network_type] = network_counts.get(chat.network_type, 0) + 1
     show_account_labels = any(count > 1 for count in network_counts.values())
 
-    input_text = "\n".join(
-        [
-            f"{chat.chat_id}\t{_format_chat_display(chat, show_account_labels)}"
-            for chat in chats
-        ]
+    return "\n".join(
+        f"{chat.chat_id}\t{_format_chat_display(chat, show_account_labels)}"
+        for chat in chats
     )
+
+
+def _load_labelled_chats(
+    client: "BeeperClient", account_map: dict, use_cache: bool = True
+) -> list["BeeperChat"]:
+    """List chats and populate network_type / account_label from the account map."""
+    chats = client.list_chats(use_cache=use_cache)
+    for chat in chats:
+        if chat.account_id and chat.account_id in account_map:
+            network_type, account_label = account_map[chat.account_id]
+            chat.network_type = network_type
+            chat.account_label = account_label
+    return chats
+
+
+def _build_picker_reload_flags(
+    *, include_muted: bool, max_chats: int, networks: list[str], no_groups: bool
+) -> list[str]:
+    """Base flags carried into every live `beeper picker` reload command."""
+    flags: list[str] = ["--max-chats", str(max_chats)]
+    if include_muted:
+        flags.append("--include-muted")
+    if no_groups:
+        flags.append("--no-groups")
+    for net in networks:
+        flags.extend(["--network", net])
+    return flags
+
+
+def _pick_chat_fzf(
+    chats: list["BeeperChat"],
+    *,
+    reload_base: Optional[list[str]] = None,
+) -> Optional[str]:
+    if not chats:
+        return None
+
+    input_text = _render_fzf_lines(chats)
+
+    fzf_cmd = [
+        "fzf",
+        "--ansi",
+        "--with-nth",
+        "2..",
+        "--prompt",
+        "Chat> ",
+        "--tiebreak=index",
+    ]
+
+    # Live filter toggles: reload the list in place via the hidden `picker`
+    # command.  Network filtering is served by typing (the tag is visible), so
+    # keys cover only the computed filters that can't be typed.  alt- keys keep
+    # fzf's ctrl-u/ctrl-w line editing intact.
+    if reload_base is not None:
+        base = " ".join(shlex.quote(part) for part in ["beeper", "picker", *reload_base])
+        fzf_cmd += [
+            "--header",
+            "alt-u unread · alt-r unreplied · alt-g 1:1 only · alt-a all · type to filter by network",
+            "--bind",
+            f"alt-a:reload({base})",
+            "--bind",
+            f"alt-u:reload({base} --unread)",
+            "--bind",
+            f"alt-r:reload({base} --unreplied)",
+            "--bind",
+            f"alt-g:reload({base} --no-groups)",
+        ]
+
     result = subprocess.run(
-        ["fzf", "--ansi", "--with-nth", "2..", "--prompt", "Chat> ", "--tiebreak=index"],
+        fzf_cmd,
         input=input_text,
         text=True,
         stdout=subprocess.PIPE,
@@ -147,10 +350,6 @@ def _pick_chat_fzf(chats: list["BeeperChat"]) -> Optional[str]:
     if not line:
         return None
     return line.split("\t", 1)[0]
-
-
-def _needs_reply(preview_is_sender: bool) -> bool:
-    return not preview_is_sender
 
 
 def _format_transcript(messages: Iterable[BeeperMessage]) -> str:
@@ -431,8 +630,22 @@ def triage(
         help="Time window for messages (today, 2d, 7d, 14d, 30d, 60d, 365d, all)",
     ),
     include_muted: bool = typer.Option(False, "--include-muted"),
+    network: Optional[list[str]] = typer.Option(
+        None,
+        "--network",
+        help="Only show chats on this network (repeatable): whatsapp, telegram, instagram, linkedin, x, gmessages, beeper. Aliases like wa/tg/ig accepted.",
+    ),
+    unread: bool = typer.Option(
+        False, "--unread", help="Only show chats with unread messages"
+    ),
+    unreplied: bool = typer.Option(
+        False, "--unreplied", help="Only show chats where you owe a reply (you're not the last sender)"
+    ),
+    no_groups: bool = typer.Option(
+        False, "--no-groups", help="Only show 1:1 chats (hide group chats)"
+    ),
     needs_reply_only: bool = typer.Option(
-        False, "--needs-reply-only", help="Only show chats where you're not the last sender"
+        False, "--needs-reply-only", hidden=True, help="Deprecated alias for --unreplied"
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     no_llm: bool = typer.Option(False, "--no-llm"),
@@ -483,32 +696,30 @@ def triage(
         logger.exception("Failed to initialize Beeper client")
         raise typer.BadParameter(str(exc)) from exc
 
+    # --needs-reply-only is a deprecated alias for --unreplied.
+    unreplied = unreplied or needs_reply_only
+    networks = {_normalize_network_filter(n) for n in (network or [])}
+
     try:
-        account_map = client.list_accounts()
+        account_map = client.list_accounts(use_cache=not refresh_chats)
     except BeeperSDKError as exc:
         logger.exception("Failed to list accounts")
         raise typer.BadParameter(str(exc)) from exc
 
     try:
-        chats = client.list_chats(use_cache=not refresh_chats)
+        chats = _load_labelled_chats(client, account_map, use_cache=not refresh_chats)
     except BeeperSDKError as exc:
         logger.exception("Failed to list chats")
         raise typer.BadParameter(str(exc)) from exc
 
-    # Populate network names and account labels from account mapping (works for both cached and fresh data)
-    for chat in chats:
-        if chat.account_id and chat.account_id in account_map:
-            network_type, account_label = account_map[chat.account_id]
-            chat.network_type = network_type
-            chat.account_label = account_label
-
-    filtered = []
-    for chat in chats:
-        if not include_muted and chat.is_muted:
-            continue
-        if needs_reply_only and not _needs_reply(chat.preview_is_sender):
-            continue
-        filtered.append(chat)
+    filtered = _filter_chats(
+        chats,
+        include_muted=include_muted,
+        networks=networks,
+        unread=unread,
+        unreplied=unreplied,
+        no_groups=no_groups,
+    )
 
     # Truncate to max_chats (Beeper already returns chats sorted by last activity)
     filtered = filtered[:max_chats]
@@ -530,6 +741,7 @@ def triage(
                 "last_activity_ms": c.last_activity_ms,
                 "preview_is_sender": c.preview_is_sender,
                 "is_muted": c.is_muted,
+                "is_group": c.is_group,
                 "network_type": c.network_type,
                 "account_label": c.account_label,
             }
@@ -547,7 +759,13 @@ def triage(
                 typer.echo(f"Chat ID not found: {chat_id}")
             raise typer.Exit(code=1)
     else:
-        selection = _pick_chat_fzf(filtered)
+        reload_base = _build_picker_reload_flags(
+            include_muted=include_muted,
+            max_chats=max_chats,
+            networks=sorted(networks),
+            no_groups=no_groups,
+        )
+        selection = _pick_chat_fzf(filtered, reload_base=reload_base)
         if not selection:
             typer.echo("No chat selected.")
             raise typer.Exit(code=0)
@@ -974,6 +1192,56 @@ def new_chat(
             typer.echo(f"Message sent to {contact_name} ({len(messages_sent)} part(s)): {message}")
         else:
             typer.echo(f"Chat with {contact_name} is ready. Use --chat-id {chat_id} to send messages.")
+
+
+@app.command(hidden=True)
+def picker(
+    max_chats: int = typer.Option(2000, "--max-chats", min=1),
+    include_muted: bool = typer.Option(False, "--include-muted"),
+    network: Optional[list[str]] = typer.Option(None, "--network"),
+    unread: bool = typer.Option(False, "--unread"),
+    unreplied: bool = typer.Option(False, "--unreplied"),
+    no_groups: bool = typer.Option(False, "--no-groups"),
+    refresh_chats: bool = typer.Option(False, "--refresh-chats"),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Emit fzf picker lines for the given filters.
+
+    Hidden helper invoked by triage's interactive live-reload keybindings.
+    Reads the chat cache so a keypress toggle stays fast.
+    """
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.WARNING,
+        format="%(levelname)s: %(message)s",
+    )
+    load_dotenv()
+
+    networks = {_normalize_network_filter(n) for n in (network or [])}
+    access_token = _require_env("BEEPER_ACCESS_TOKEN")
+
+    try:
+        client = _build_client(access_token, agent=True)
+        account_map = client.list_accounts(use_cache=not refresh_chats)
+        chats = _load_labelled_chats(client, account_map, use_cache=not refresh_chats)
+    except BeeperSDKError as exc:
+        logger.exception("picker failed")
+        raise typer.BadParameter(str(exc)) from exc
+
+    filtered = _filter_chats(
+        chats,
+        include_muted=include_muted,
+        networks=networks,
+        unread=unread,
+        unreplied=unreplied,
+        no_groups=no_groups,
+    )[:max_chats]
+
+    lines = _render_fzf_lines(filtered)
+    if lines:
+        # Output is consumed by fzf (--ansi) via a pipe, so force the network
+        # colour codes through — click.echo would otherwise strip them because
+        # stdout isn't a TTY.
+        typer.echo(lines, color=True)
 
 
 verbs.register(app)
