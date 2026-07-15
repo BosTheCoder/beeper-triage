@@ -194,16 +194,21 @@ def test_chat_view_renders_image_with_caption():
     img = _msg(False, "None", mid="i1", msg_type="IMAGE",
                attachment={"kind": "image", "mime": "image/jpeg", "src_url": "file://x.jpg"})
     c = FakeClient(messages={"c": [img]})
-    # no caption fn -> photo placeholder, but src still carried for display
+    # no caption fn -> src carried for display; no clutter text
     view = inbox.chat_view(c, "c")
     m = view.messages[0]
     assert m.kind == "image"
     assert m.media_src == "file://x.jpg"
-    assert m.text == "📷 Photo"
-    # with a caption fn -> description reaches text (and thus the transcript/prompt)
+    assert m.text == ""  # no sender caption -> nothing shown but the image
+    assert m.caption == ""
+    # with a caption fn -> description lives in .caption (hidden in UI), NOT .text,
+    # but DOES reach the transcript/prompt so the model can read the image.
     view2 = inbox.chat_view(c, "c", caption_fn=lambda url, mid: "Party flyer: Sat 3pm, Flat 26")
-    assert "Party flyer: Sat 3pm, Flat 26" in view2.messages[0].text
+    m2 = view2.messages[0]
+    assert m2.caption == "Party flyer: Sat 3pm, Flat 26"
+    assert m2.text == ""  # description not dumped into the display text
     assert "Flat 26" in view2.transcript()
+    assert "[image:" in view2.transcript()
 
 
 def test_chat_view_surfaces_reactions_and_editable():

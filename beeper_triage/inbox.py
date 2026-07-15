@@ -163,6 +163,7 @@ class ChatMessage:
     reactions: list = field(default_factory=list)
     editable: bool = False  # my own text messages can be edited/unsent
     media_src: Optional[str] = None  # raw attachment src_url (e.g. an image), for display
+    caption: str = ""  # AI vision description of an image — feeds the prompt, hidden in UI by default
 
 
 @dataclass
@@ -171,12 +172,20 @@ class ChatView:
     messages: list[ChatMessage]
 
     def transcript(self) -> str:
+        # Fold the image caption back in for the model only (the UI keeps it
+        # hidden): the AI needs to know what a photo contains to reply to it.
+        def _line(m: ChatMessage) -> str:
+            if m.kind == "image":
+                own = f"{m.text} " if m.text else ""
+                return f"{own}[image: {m.caption or 'a photo'}]"
+            return m.text
+
         return format_transcript(
             BeeperMessage(
                 message_id="",
                 sender_name=m.sender,
                 is_sender=m.is_me,
-                text=m.text,
+                text=_line(m),
                 timestamp_ms=m.timestamp_ms,
             )
             for m in self.messages
@@ -246,6 +255,7 @@ def _render_message(
     text = clean_text(m.text)
     att = m.attachment or {}
     media_src = None
+    img_caption = ""
 
     if m.msg_type == "REACTION":
         return None  # reactions surface on their target message's .reactions
@@ -264,18 +274,13 @@ def _render_message(
     elif att and _is_image(att, m.msg_type):
         kind = "image"
         media_src = att.get("src_url")
-        caption = ""  # what's actually IN the image (vision) — feeds display + prompt
+        # `text` stays as the sender's own words (may be empty); the vision
+        # description goes in `caption` — hidden in the UI, fed to the prompt.
         if caption_fn and media_src:
             try:
-                caption = (caption_fn(media_src, m.message_id) or "").strip()
+                img_caption = (caption_fn(media_src, m.message_id) or "").strip()
             except Exception:
-                caption = ""
-        parts = ["📷 Photo"]
-        if text:  # a caption the sender typed with the image
-            parts.append(f'"{text}"')
-        if caption:
-            parts.append(f"— {caption}")
-        text = " ".join(parts)
+                img_caption = ""
     elif not text and att:
         kind = att.get("kind", "file")
         text = _ATTACH_LABEL.get(kind, "📎 Attachment")
@@ -293,6 +298,7 @@ def _render_message(
         reactions=list(m.reactions or []),
         editable=(m.is_sender and kind == "text"),
         media_src=media_src,
+        caption=img_caption,
     )
 
 
