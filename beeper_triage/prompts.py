@@ -57,6 +57,52 @@ def build_prompt(
     ]
 
 
+# Reply "types" the model may choose from, with what each one is for. These
+# mirror the interactive guidance presets so the web UI feels like BPT.
+REPLY_TYPES: dict[str, str] = {
+    "going": "Keep the conversation flowing with the same energy.",
+    "schedule": "Arrange or nail down a time/place for something.",
+    "close": "Wrap things up warmly without inviting more back-and-forth.",
+    "rekindle": "Re-engage a cooled-off thread; reference something recent or ask a question.",
+    "decline": "Politely decline without making it obvious you're declining.",
+    "todo": "Acknowledge briefly ('on it!') when the message is really a task.",
+}
+
+_OPTIONS_SYSTEM = (
+    "You are a fast, friendly texting assistant helping someone clear their "
+    "message backlog. Given a chat transcript, choose the reply approaches that "
+    "genuinely fit THIS conversation and write one concise, natural draft reply "
+    "for each — in the user's own casual voice, no preamble, no labels inside "
+    "the text, no emoji unless the thread already uses them. Address every open "
+    "topic the user hasn't responded to yet.\n\n"
+    "Return ONLY a JSON array (no markdown fence, no prose) of objects with keys "
+    '"type" and "text". Use only these types where they fit:\n'
+    + "\n".join(f'- "{k}": {v}' for k, v in REPLY_TYPES.items())
+    + "\n\nOrder the array best-fit first. Do not invent types. Aim to give the "
+    "requested number of options: when only one or two approaches truly fit, add "
+    "meaningfully different variations of them (shorter/warmer/more direct) rather "
+    "than forcing an approach that doesn't fit — you may reuse a type up to twice "
+    "for genuinely distinct drafts. Never pad with near-identical or irrelevant replies."
+)
+
+
+def build_options_prompt(
+    transcript: str, count: int = 5, hint: str = ""
+) -> list[OpenRouterMessage]:
+    """Prompt for N type-tagged draft replies as a JSON array."""
+    user = (
+        f"Draft up to {count} distinct reply options for the conversation below. "
+        "Each must be send-ready.\n"
+    )
+    if hint:
+        user += f"\nExtra steer from the user: {hint}\n"
+    user += f"\n{transcript}"
+    return [
+        OpenRouterMessage(role="system", content=_OPTIONS_SYSTEM),
+        OpenRouterMessage(role="user", content=user),
+    ]
+
+
 def build_todo_prompt(transcript: str) -> list[OpenRouterMessage]:
     """Build prompt for acknowledge + todo flow."""
     return [

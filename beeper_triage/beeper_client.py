@@ -51,6 +51,8 @@ class BeeperChat:
     network_type: Optional[str] = None
     account_label: Optional[str] = None  # User-friendly account identifier
     is_group: bool = False  # True for group chats (type == "group")
+    network: Optional[str] = None  # Raw network from the chat (e.g. "whatsapp")
+    is_archived: bool = False  # True when the chat is archived (out of inbox)
 
 
 class BeeperClient:
@@ -114,6 +116,8 @@ class BeeperClient:
                         "network_type": chat.network_type,
                         "account_label": chat.account_label,
                         "is_group": chat.is_group,
+                        "network": chat.network,
+                        "is_archived": chat.is_archived,
                     }
                     for chat in chats
                 ],
@@ -204,6 +208,13 @@ class BeeperClient:
                     account_id=account_id,
                     network_type=None,  # Will be populated in CLI from account mapping
                     is_group=(chat_type == "group"),
+                    network=(
+                        str(self._get_attr(chat, "network", default=""))
+                        or None
+                    ),
+                    is_archived=bool(
+                        self._get_attr(chat, "is_archived", "archived", default=False)
+                    ),
                 )
             )
 
@@ -487,6 +498,15 @@ class BeeperClient:
         except Exception as exc:
             raise BeeperSDKError(
                 f"Failed to mark chat unread via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+
+    def archive(self, chat_id: str, archived: bool = True) -> Any:
+        """Archive (or, with archived=False, unarchive) a chat."""
+        try:
+            return self._client.chats.archive(chat_id, archived=archived)
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to archive chat via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
     def add_reaction(self, chat_id: str, message_id: str, reaction_key: str) -> Any:
