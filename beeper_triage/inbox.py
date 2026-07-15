@@ -406,30 +406,59 @@ def draft_options(
     return _parse_drafts(raw, count=count)
 
 
+_OBJ_RE = re.compile(r"\{[^{}]*\}")
+
+
 def _parse_drafts(raw: str, *, count: int) -> list[Draft]:
-    """Robustly pull a JSON array of {type,text} out of the model output."""
+    """Robustly pull a JSON array of {type,text} out of the model output.
+
+    Tolerates a ```json fence and raw newlines inside string values (the model
+    often emits multi-line reply text, which strict JSON rejects). Falls back to
+    plucking individual {type,text} objects, then — only if the output is clearly
+    NOT JSON — to treating the whole thing as one draft. Never surfaces raw JSON."""
     payload = _extract_json_array(raw)
+    items = payload if isinstance(payload, list) else _salvage_objects(raw)
+
     drafts: list[Draft] = []
     seen: set[str] = set()
-    if isinstance(payload, list):
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            text = str(item.get("text", "")).strip()
-            if not text:
-                continue
-            t = str(item.get("type", "")).strip().lower()
-            if t not in REPLY_TYPES:
-                t = "going"
-            key = text.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            drafts.append(Draft(type=t, text=text))
-    if not drafts and raw.strip():
-        # Model ignored the format — treat the whole thing as one draft.
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        t = str(item.get("type", "")).strip().lower()
+        if t not in REPLY_TYPES:
+            t = "going"
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        drafts.append(Draft(type=t, text=text))
+
+    if not drafts and raw.strip() and not _looks_like_json(raw):
+        # Model wrote plain prose instead of JSON — use it as a single draft.
         drafts.append(Draft(type="going", text=raw.strip()))
     return drafts[:count]
+
+
+def _looks_like_json(raw: str) -> bool:
+    s = raw.strip().lstrip("`").lstrip("json").strip()
+    return s.startswith("[") or s.startswith("{")
+
+
+def _salvage_objects(raw: str) -> list:
+    """Pluck individual {type,text} objects when the whole-array parse fails
+    (trailing comma, stray text, etc.). Each is parsed leniently."""
+    out = []
+    for chunk in _OBJ_RE.findall(raw):
+        try:
+            obj = json.loads(chunk, strict=False)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
 
 
 def _extract_json_array(raw: str):
@@ -439,7 +468,8 @@ def _extract_json_array(raw: str):
     if start != -1 and end != -1 and end > start:
         cleaned = cleaned[start : end + 1]
     try:
-        return json.loads(cleaned)
+        # strict=False: allow raw newlines/tabs inside strings (multi-line replies)
+        return json.loads(cleaned, strict=False)
     except (json.JSONDecodeError, ValueError):
         return None
 
@@ -451,7 +481,7 @@ def _extract_json_object(raw: str):
     if start != -1 and end != -1 and end > start:
         cleaned = cleaned[start : end + 1]
     try:
-        return json.loads(cleaned)
+        return json.loads(cleaned, strict=False)
     except (json.JSONDecodeError, ValueError):
         return None
 

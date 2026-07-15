@@ -300,6 +300,24 @@ def test_draft_options_falls_back_to_single_draft():
     assert drafts == [inbox.Draft(type="going", text="just some text")]
 
 
+def test_parse_drafts_tolerates_raw_newlines_in_text():
+    # The model often emits multi-line reply text with a RAW newline inside the
+    # JSON string, which strict json.loads rejects -> used to dump raw JSON as a
+    # single draft. Must now parse into real drafts.
+    reply = '```json\n[{"type":"going","text":"say less coming now\n\nalso saw the invite, im down"},{"type":"close","text":"bet, catch you later"}]\n```'
+    drafts = inbox._parse_drafts(reply, count=5)
+    assert len(drafts) == 2
+    assert drafts[0].type == "going" and "\n\n" in drafts[0].text
+    assert "```" not in drafts[0].text  # never leaks the fence
+
+
+def test_parse_drafts_never_surfaces_raw_json():
+    # If parsing truly fails, we must not show the user raw JSON as a "draft".
+    broken = '```json [{"type":"going" "text": BROKEN'
+    drafts = inbox._parse_drafts(broken, count=5)
+    assert all("```json" not in d.text and not d.text.startswith("[") for d in drafts)
+
+
 def test_draft_options_empty_transcript_no_call():
     orc = FakeORC("[]")
     assert inbox.draft_options(orc, "m", "   ") == []
