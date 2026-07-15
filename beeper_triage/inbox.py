@@ -333,13 +333,45 @@ def _oldest_first(msgs: list[BeeperMessage]) -> list[BeeperMessage]:
     return list(msgs)
 
 
+_GAP_MARK_MS = 3 * 60 * 60 * 1000  # mark a break of 3h+ between messages
+
+
+def _humanize_gap(ms: int) -> str:
+    """A rough '2 weeks later' style label for a millisecond time gap."""
+    s = ms / 1000
+    if s < 3600:
+        return f"{int(round(s / 60))} min later"
+    h = s / 3600
+    if h < 24:
+        return f"{int(round(h))} hour{'s' if round(h) != 1 else ''} later"
+    d = h / 24
+    if d < 7:
+        return f"{int(round(d))} day{'s' if round(d) != 1 else ''} later"
+    if d < 30:
+        w = int(round(d / 7))
+        return f"{w} week{'s' if w != 1 else ''} later"
+    if d < 365:
+        mo = int(round(d / 30))
+        return f"{mo} month{'s' if mo != 1 else ''} later"
+    y = int(round(d / 365))
+    return f"{y} year{'s' if y != 1 else ''} later"
+
+
 def format_transcript(messages: Iterable[BeeperMessage]) -> str:
-    lines = []
+    """Render the transcript, inserting a '[2 weeks later]' marker on big time
+    gaps so the model can tell a stale backlog from a fresh message."""
+    lines: list[str] = []
+    prev_ts: Optional[int] = None
     for m in messages:
-        who = "Me" if m.is_sender else (m.sender_name or "Them")
         text = (m.text or "").strip()
-        if text:
-            lines.append(f"{who}: {text}")
+        if not text:
+            continue
+        if prev_ts and m.timestamp_ms and (m.timestamp_ms - prev_ts) >= _GAP_MARK_MS:
+            lines.append(f"[{_humanize_gap(m.timestamp_ms - prev_ts)}]")
+        who = "Me" if m.is_sender else (m.sender_name or "Them")
+        lines.append(f"{who}: {text}")
+        if m.timestamp_ms:
+            prev_ts = m.timestamp_ms
     return "\n".join(lines)
 
 

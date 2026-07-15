@@ -19,6 +19,33 @@ def test_openrouter_message_cache_payload():
     assert block["cache_control"] == {"type": "ephemeral"}
 
 
+def test_transcript_marks_big_time_gaps():
+    day = 24 * 60 * 60 * 1000
+    base = 1_700_000_000_000  # a real-ish epoch (0 reads as "no timestamp")
+    msgs = [
+        _msg(False, "you free sat?", mid="1", ts=base),
+        _msg(False, "yo you about?", mid="2", ts=base + 14 * day),  # 2 weeks later
+    ]
+    view = inbox.chat_view(FakeClient(messages={"c": msgs}), "c")
+    t = view.transcript()
+    assert "[2 weeks later]" in t
+    assert t.index("you free sat") < t.index("[2 weeks later]") < t.index("yo you about")
+
+
+def test_no_marker_for_small_gaps():
+    base = 1_700_000_000_000
+    msgs = [_msg(False, "a", mid="1", ts=base), _msg(False, "b", mid="2", ts=base + 60_000)]
+    t = inbox.chat_view(FakeClient(messages={"c": msgs}), "c").transcript()
+    assert "later]" not in t
+
+
+def test_tentative_reply_type_available():
+    from beeper_triage.prompts import REPLY_TYPES, build_options_prompt
+    assert "tentative" in REPLY_TYPES
+    sys_text = build_options_prompt("Me: hi", style="")[0].content
+    assert "tentative" in sys_text  # offered to the model
+
+
 def test_options_prompt_marks_system_cacheable():
     msgs = build_options_prompt("Me: hi", count=5, style="talks casual")
     assert msgs[0].role == "system" and msgs[0].cache is True

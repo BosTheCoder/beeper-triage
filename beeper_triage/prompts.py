@@ -65,6 +65,11 @@ REPLY_TYPES: dict[str, str] = {
     "close": "Wrap things up warmly without inviting more back-and-forth.",
     "rekindle": "Re-engage a cooled-off thread; reference something recent or ask a question.",
     "decline": "Politely decline without making it obvious you're declining.",
+    "tentative": (
+        "Soft yes / hold. For an invite you're keen on but can't commit to yet: "
+        "show interest, say you can't lock it in now, and that you'll confirm "
+        "closer to the time. NOT a decline — you may well go."
+    ),
     "todo": "Acknowledge briefly ('on it!') when the message is really a task.",
 }
 
@@ -73,8 +78,12 @@ _OPTIONS_SYSTEM = (
     "message backlog. Given a chat transcript, produce a set of send-ready draft "
     "replies the user can pick from. Every draft must be in the user's own casual "
     "voice, with no preamble, no labels inside the text, and no emoji unless the "
-    "thread already uses them. Each draft must address every open topic the user "
-    "hasn't responded to yet.\n\n"
+    "thread already uses them.\n\n"
+    "WEIGHT RECENCY. Messages are in time order and a line like '[2 weeks later]' "
+    "marks a big gap. Focus your reply on the most RECENT message(s). If an older "
+    "cluster sits before a large gap, treat it as likely stale — don't force a "
+    "point-by-point reply to it; a light nod is plenty if it still matters. The "
+    "fresh message is usually the one the user actually wants to answer.\n\n"
     "Return ONLY a JSON array (no markdown fence, no prose) of objects with keys "
     '"type" and "text". Use only these types:\n'
     + "\n".join(f'- "{k}": {v}' for k, v in REPLY_TYPES.items())
