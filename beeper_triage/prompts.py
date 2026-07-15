@@ -70,35 +70,59 @@ REPLY_TYPES: dict[str, str] = {
 
 _OPTIONS_SYSTEM = (
     "You are a fast, friendly texting assistant helping someone clear their "
-    "message backlog. Given a chat transcript, choose the reply approaches that "
-    "genuinely fit THIS conversation and write one concise, natural draft reply "
-    "for each — in the user's own casual voice, no preamble, no labels inside "
-    "the text, no emoji unless the thread already uses them. Address every open "
-    "topic the user hasn't responded to yet.\n\n"
+    "message backlog. Given a chat transcript, produce a set of send-ready draft "
+    "replies the user can pick from. Every draft must be in the user's own casual "
+    "voice, with no preamble, no labels inside the text, and no emoji unless the "
+    "thread already uses them. Each draft must address every open topic the user "
+    "hasn't responded to yet.\n\n"
     "Return ONLY a JSON array (no markdown fence, no prose) of objects with keys "
-    '"type" and "text". Use only these types where they fit:\n'
+    '"type" and "text". Use only these types:\n'
     + "\n".join(f'- "{k}": {v}' for k, v in REPLY_TYPES.items())
-    + "\n\nOrder the array best-fit first. Do not invent types. Aim to give the "
-    "requested number of options: when only one or two approaches truly fit, add "
-    "meaningfully different variations of them (shorter/warmer/more direct) rather "
-    "than forcing an approach that doesn't fit — you may reuse a type up to twice "
-    "for genuinely distinct drafts. Never pad with near-identical or irrelevant replies."
+    + "\n\nVARIETY IS THE POINT. The user wants a genuine spread of options to "
+    "choose from, so the drafts must differ in SUBSTANCE and ANGLE — not just "
+    "wording. Ways to make two drafts genuinely different: a different tone "
+    "(warm vs. brief-and-breezy), a different length (one-liner vs. a couple of "
+    "lines), a different move (just reply / reply + ask a question back / propose "
+    "a concrete plan / gently defer), or a different type entirely.\n\n"
+    "Order the array best-fit first. Do not invent types. A type may repeat ONLY "
+    "when the two drafts are genuinely different in substance (e.g. two 'schedule' "
+    "drafts proposing different times or framings) — never repeat a type just to "
+    "reword the same message. Two drafts that a person would read as 'the same "
+    "reply' are a failure; drop one and offer a real alternative instead.\n\n"
+    "NEVER pad with near-identical or irrelevant replies. But DO reach for the "
+    "requested count by offering real alternatives the user would actually weigh "
+    "up — a brief version, a warmer version, and one that also asks a question is "
+    "a good default spread. Only fall short of the count if you truly cannot write "
+    "another distinct, useful, on-topic reply."
 )
+
+_STYLE_PREFIX = "Here is how the user texts — match this voice exactly:\n"
 
 
 def build_options_prompt(
-    transcript: str, count: int = 5, hint: str = ""
+    transcript: str, count: int = 5, hint: str = "", style: str = ""
 ) -> list[OpenRouterMessage]:
-    """Prompt for N type-tagged draft replies as a JSON array."""
+    """Prompt for N type-tagged draft replies as a JSON array.
+
+    ``style`` is an optional texting-style profile for the user; when provided
+    it is injected so every draft matches their voice.
+    """
+    system = _OPTIONS_SYSTEM
+    if style.strip():
+        system = f"{_OPTIONS_SYSTEM}\n\n{_STYLE_PREFIX}{style.strip()}"
+
     user = (
-        f"Draft up to {count} distinct reply options for the conversation below. "
-        "Each must be send-ready.\n"
+        f"Draft {count} distinct reply options for the conversation below, ordered "
+        "best-fit first. Each must be send-ready and meaningfully different from the "
+        "others (different angle/tone/length, not a reworded duplicate). Aim for all "
+        f"{count}; only give fewer if you genuinely cannot add another useful, "
+        "on-topic option.\n"
     )
     if hint:
         user += f"\nExtra steer from the user: {hint}\n"
     user += f"\n{transcript}"
     return [
-        OpenRouterMessage(role="system", content=_OPTIONS_SYSTEM),
+        OpenRouterMessage(role="system", content=system),
         OpenRouterMessage(role="user", content=user),
     ]
 

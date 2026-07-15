@@ -24,12 +24,23 @@ def _chat(cid, **kw):
     return BeeperChat(**defaults)
 
 
+def _msg(is_sender, text="hi", *, mid="1", msg_type="TEXT", attachment=None, reactions=None, ts=0):
+    return BeeperMessage(
+        message_id=mid, sender_name="Them", is_sender=is_sender,
+        text=text, timestamp_ms=ts, msg_type=msg_type,
+        attachment=attachment, reactions=reactions or [],
+    )
+
+
 class FakeClient:
     def __init__(self, chats=None, messages=None):
         self._chats = chats or []
         self._messages = messages or {}
         self.sent = []
         self.archived = []
+        self.reacted = []
+        self.edited = []
+        self.deleted = []
 
     def list_chats(self, use_cache=False):
         return list(self._chats)
@@ -42,6 +53,19 @@ class FakeClient:
 
     def archive(self, chat_id, archived=True):
         self.archived.append((chat_id, archived))
+        # reflect state so archive_reliable's verification can see it
+        for c in self._chats:
+            if c.chat_id == chat_id:
+                c.is_archived = archived
+
+    def add_reaction(self, chat_id, message_id, reaction_key):
+        self.reacted.append((chat_id, message_id, reaction_key))
+
+    def edit_message(self, chat_id, message_id, text):
+        self.edited.append((chat_id, message_id, text))
+
+    def delete_message(self, chat_id, message_id, for_everyone=False):
+        self.deleted.append((chat_id, message_id, for_everyone))
 
 
 class FakeORC:
@@ -64,14 +88,14 @@ def test_queue_keeps_only_unreplied_unarchived_1to1():
         _chat("group", is_group=True),  # dropped by default
         _chat("muted", is_muted=True),  # dropped by default
     ]
-    q = inbox.build_queue(FakeClient(chats))
+    q = inbox.build_queue(FakeClient(chats), verify=False)
     assert [c.chat_id for c in q] == ["owe"]
 
 
 def test_queue_groups_and_muted_toggles():
     chats = [_chat("g", is_group=True), _chat("m", is_muted=True), _chat("plain")]
     q = inbox.build_queue(
-        FakeClient(chats), inbox.QueueFilters(groups=True, include_muted=True)
+        FakeClient(chats), inbox.QueueFilters(groups=True, include_muted=True), verify=False
     )
     assert {c.chat_id for c in q} == {"g", "m", "plain"}
 
@@ -82,8 +106,36 @@ def test_queue_network_filter_and_recency_order():
         _chat("new", last_activity_ms=9, network="whatsapp"),
         _chat("tg", network="telegram"),
     ]
-    q = inbox.build_queue(FakeClient(chats), inbox.QueueFilters(networks=["whatsapp"]))
+    q = inbox.build_queue(
+        FakeClient(chats), inbox.QueueFilters(networks=["whatsapp"]), verify=False
+    )
     assert [c.chat_id for c in q] == ["new", "old"]
+
+
+def test_queue_verify_ignores_trailing_reaction():
+    # #3: my message stands, they only reacted after -> I do NOT owe a reply.
+    chats = [_chat("reacted-only"), _chat("they-spoke")]
+    messages = {
+        "reacted-only": [
+            _msg(True, "my last message", ts=1),
+            _msg(False, "None", msg_type="REACTION", ts=2),
+        ],
+        "they-spoke": [
+            _msg(True, "hey", ts=1),
+            _msg(False, "you there?", ts=2),
+        ],
+    }
+    q = inbox.build_queue(FakeClient(chats, messages), verify=True)
+    assert [c.chat_id for c in q] == ["they-spoke"]
+
+
+def test_owes_reply_last_real_message():
+    c = FakeClient(messages={
+        "a": [_msg(False, "hi", ts=1), _msg(True, "reply", ts=2), _msg(False, "None", msg_type="REACTION", ts=3)],
+    })
+    assert inbox._owes_reply(c, "a") is False  # my reply stands under the reaction
+    c2 = FakeClient(messages={"b": [_msg(True, "hi", ts=1), _msg(False, "yo", ts=2)]})
+    assert inbox._owes_reply(c2, "b") is True
 
 
 # ------------------------------ chat_view --------------------------------
@@ -93,6 +145,44 @@ def test_clean_text_strips_html_and_none():
     assert inbox.clean_text("None") == ""
     assert inbox.clean_text(None) == ""
     assert inbox.clean_text("a &amp; b") == "a & b"
+
+
+def test_clean_text_handles_bullet_lists_and_invisibles():
+    # #7: <ul><li> bullets must not mash together; word-joiners stripped.
+    raw = "Brands:<br><ul><li>Uniqlo - tees</li><li>⁠Zara - hit and miss</li></ul>"
+    out = inbox.clean_text(raw)
+    assert "• Uniqlo - tees" in out
+    assert "• Zara - hit and miss" in out
+    assert "⁠" not in out
+    # the two bullets are on their own lines
+    assert out.count("•") == 2
+
+
+def test_chat_view_renders_voice_note_with_transcript():
+    # #5b: voice notes are visible and (when a transcriber is given) transcribed.
+    vn = _msg(True, "None", mid="v1", msg_type="VOICE",
+              attachment={"is_voice_note": True, "duration": 34, "src_url": "u"})
+    c = FakeClient(messages={"c": [vn]})
+    # no transcriber -> placeholder only
+    view = inbox.chat_view(c, "c")
+    assert view.messages[0].kind == "voice"
+    assert view.messages[0].text == "🎤 Voice note (0:34)"
+    # with transcriber -> content included
+    view2 = inbox.chat_view(c, "c", transcribe_fn=lambda url, mid: "yeah sounds good")
+    assert 'yeah sounds good' in view2.messages[0].text
+
+
+def test_chat_view_surfaces_reactions_and_editable():
+    msgs = [
+        _msg(False, "hey", mid="m1", reactions=["👍"]),
+        _msg(True, "my reply", mid="m2"),
+        _msg(True, "None", mid="r1", msg_type="REACTION"),  # skipped as a bubble
+    ]
+    view = inbox.chat_view(FakeClient(messages={"c": msgs}), "c")
+    assert [m.message_id for m in view.messages] == ["m1", "m2"]
+    assert view.messages[0].reactions == ["👍"]
+    assert view.messages[1].editable is True  # my own text message
+    assert view.messages[0].editable is False
 
 
 def test_chat_view_drops_none_and_cleans_html():
@@ -152,19 +242,54 @@ def test_draft_options_empty_transcript_no_call():
 
 # ------------------------------- resolve ---------------------------------
 
-def test_resolve_send_sends_then_archives():
+def test_send_sends_only_no_archive():
+    # #9: send must NOT archive immediately (the send un-archives the chat).
     c = FakeClient()
-    r = inbox.resolve(c, "chat1", "send", text="hello")
+    r = inbox.send(c, "chat1", "hello")
     assert c.sent == [("chat1", "hello")]
-    assert c.archived == [("chat1", True)]
-    assert r.archived and r.sent_text == "hello"
+    assert c.archived == []  # archive happens separately, later
+    assert r.sent_text == "hello" and not r.archived
 
 
-def test_resolve_send_dry_run_touches_nothing():
+def test_send_dry_run_touches_nothing():
     c = FakeClient()
-    r = inbox.resolve(c, "chat1", "send", text="hello", dry_run=True)
+    r = inbox.send(c, "chat1", "hello", dry_run=True)
     assert c.sent == [] and c.archived == []
-    assert r.dry_run and r.archived
+    assert r.dry_run
+
+
+def test_archive_reliable_retries_until_it_sticks():
+    chat = _chat("c1", is_archived=False)
+    c = FakeClient([chat])
+    # Simulate the bridge bouncing the first archive: swallow the first call.
+    calls = {"n": 0}
+    real_archive = c.archive
+    def flaky(cid, archived=True):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return  # first attempt doesn't stick
+        real_archive(cid, archived)
+    c.archive = flaky
+    r = inbox.archive_reliable(c, "c1", attempts=4, delay=0, sleep=lambda _: None)
+    assert r.archived and calls["n"] == 2
+
+
+def test_archive_reliable_gives_up_and_reports():
+    chat = _chat("c1", is_archived=False)
+    c = FakeClient([chat])
+    c.archive = lambda cid, archived=True: None  # never sticks
+    r = inbox.archive_reliable(c, "c1", attempts=3, delay=0, sleep=lambda _: None)
+    assert not r.archived
+
+
+def test_react_edit_unsend():
+    c = FakeClient()
+    inbox.react(c, "c1", "m1", "👍")
+    inbox.edit(c, "c1", "m1", "new text")
+    inbox.unsend(c, "c1", "m1")
+    assert c.reacted == [("c1", "m1", "👍")]
+    assert c.edited == [("c1", "m1", "new text")]
+    assert c.deleted == [("c1", "m1", True)]
 
 
 def test_resolve_archive_only():

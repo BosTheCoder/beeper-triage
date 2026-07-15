@@ -6,7 +6,7 @@ import datetime
 import json
 import mimetypes
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -35,6 +35,9 @@ class BeeperMessage:
     is_sender: bool
     text: str
     timestamp_ms: int
+    msg_type: str = "TEXT"  # TEXT / VOICE / REACTION / IMAGE / VIDEO / FILE / ...
+    attachment: Optional[dict] = None  # {kind, is_voice_note, duration, mime, src_url, file_name}
+    reactions: list = field(default_factory=list)  # emoji reaction keys on this message
 
 
 @dataclass
@@ -132,6 +135,38 @@ class BeeperClient:
             if hasattr(obj, name):
                 return getattr(obj, name)
         return default
+
+    def _extract_attachment(self, msg: Any) -> Optional[dict]:
+        """First attachment as a plain dict, or None. Marks voice notes."""
+        attachments = self._get_attr(msg, "attachments", default=None) or []
+        if not attachments:
+            return None
+        a = attachments[0]
+        mime = self._get_attr(a, "mime_type", "mimeType", default=None)
+        is_voice = bool(self._get_attr(a, "is_voice_note", "isVoiceNote", default=False))
+        kind = self._get_attr(a, "type", default=None) or (
+            (mime or "").split("/", 1)[0] or "file"
+        )
+        if is_voice:
+            kind = "voice"
+        return {
+            "kind": str(kind),
+            "is_voice_note": is_voice,
+            "duration": self._get_attr(a, "duration", default=None),
+            "mime": mime,
+            "src_url": self._get_attr(a, "src_url", "srcURL", default=None),
+            "file_name": self._get_attr(a, "file_name", "fileName", default=None),
+        }
+
+    def _extract_reactions(self, msg: Any) -> list:
+        """Emoji reaction keys on a message (e.g. ['👍', '🔥'])."""
+        raw = self._get_attr(msg, "reactions", default=None) or []
+        out: list[str] = []
+        for r in raw:
+            key = self._get_attr(r, "reaction_key", "reactionKey", "key", "emoji", default=None)
+            if key:
+                out.append(str(key))
+        return out
 
     def list_chats(self, use_cache: bool = True) -> list[BeeperChat]:
         if use_cache:
@@ -360,6 +395,12 @@ class BeeperClient:
                         is_sender=bool(self._get_attr(msg, "is_sender", default=False)),
                         text=str(self._get_attr(msg, "text", "body", default="")),
                         timestamp_ms=timestamp_ms,
+                        msg_type=str(
+                            self._get_attr(msg, "type", "message_type", default="TEXT")
+                            or "TEXT"
+                        ).upper(),
+                        attachment=self._extract_attachment(msg),
+                        reactions=self._extract_reactions(msg),
                     )
                 )
 
