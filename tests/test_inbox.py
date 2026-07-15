@@ -306,6 +306,29 @@ def test_draft_options_empty_transcript_no_call():
     assert orc.calls == []
 
 
+# ------------------------------- extract_event ---------------------------
+
+def test_extract_event_parses_object():
+    reply = ('{"found": true, "title": "Rob\'s Bday", "date": "2026-08-01", '
+             '"start_time": "14:00", "end_time": "", "all_day": false, '
+             '"location": "Regent\'s Park", "details": "RSVP by 22 July"}')
+    ev = inbox.extract_event(FakeORC(reply), "m", "Leah: come to the party")
+    assert ev.found and ev.title == "Rob's Bday"
+    assert ev.date == "2026-08-01" and ev.start_time == "14:00"
+    assert ev.location == "Regent's Park"
+
+
+def test_extract_event_not_found():
+    ev = inbox.extract_event(FakeORC('{"found": false}'), "m", "Leah: hey")
+    assert ev.found is False
+
+
+def test_extract_event_empty_transcript_no_call():
+    orc = FakeORC('{"found": true}')
+    assert inbox.extract_event(orc, "m", "  ").found is False
+    assert orc.calls == []
+
+
 # ------------------------------- resolve ---------------------------------
 
 def test_send_sends_only_no_archive():

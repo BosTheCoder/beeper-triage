@@ -139,6 +139,37 @@ def build_options_prompt(
     ]
 
 
+_EVENT_SYSTEM = (
+    "You extract a single calendar event from a chat transcript, if one is being "
+    "proposed or invited to (a party, dinner, meeting, trip, appointment). Return "
+    "ONLY a JSON object (no markdown fence, no prose) with these keys:\n"
+    '- "found": true only if there is a concrete event to add to a calendar\n'
+    '- "title": short event name (e.g. "Rob\'s Birthday & Graduation")\n'
+    '- "date": the event date as YYYY-MM-DD (resolve relative/partial dates using '
+    "the provided today's date; pick the next future occurrence)\n"
+    '- "start_time": "HH:MM" 24h, or "" if none given\n'
+    '- "end_time": "HH:MM" 24h, or "" if none given\n'
+    '- "all_day": true if no specific time is given\n'
+    '- "location": place/address, or ""\n'
+    '- "details": one or two lines of useful specifics (what to bring, RSVP date, '
+    "parking, etc.), or \"\"\n"
+    "If there is no concrete event, return {\"found\": false}. Never invent details "
+    "that aren't in the transcript."
+)
+
+
+def build_event_prompt(transcript: str, today: str = "") -> list[OpenRouterMessage]:
+    """Prompt to pull a single calendar event out of a transcript as JSON."""
+    user = "Extract the calendar event from this conversation, if any.\n"
+    if today:
+        user += f"Today's date is {today} (use it to resolve dates like 'Saturday 1st Aug').\n"
+    user += f"\n{transcript}"
+    return [
+        OpenRouterMessage(role="system", content=_EVENT_SYSTEM, cache=True),
+        OpenRouterMessage(role="user", content=user),
+    ]
+
+
 def build_todo_prompt(transcript: str) -> list[OpenRouterMessage]:
     """Build prompt for acknowledge + todo flow."""
     return [

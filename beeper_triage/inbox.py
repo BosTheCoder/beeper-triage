@@ -17,7 +17,7 @@ from typing import Callable, Iterable, Optional
 
 from .beeper_client import BeeperChat, BeeperClient, BeeperMessage
 from .openrouter_client import OpenRouterClient
-from .prompts import REPLY_TYPES, build_options_prompt
+from .prompts import REPLY_TYPES, build_event_prompt, build_options_prompt
 
 
 # ----------------------------- queue building -----------------------------
@@ -442,6 +442,59 @@ def _extract_json_array(raw: str):
         return json.loads(cleaned)
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+def _extract_json_object(raw: str):
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        cleaned = cleaned[start : end + 1]
+    try:
+        return json.loads(cleaned)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+# ------------------------------- events -----------------------------------
+
+@dataclass
+class Event:
+    """A calendar event pulled from a conversation."""
+
+    found: bool
+    title: str = ""
+    date: str = ""        # YYYY-MM-DD
+    start_time: str = ""  # HH:MM (24h) or ""
+    end_time: str = ""
+    all_day: bool = False
+    location: str = ""
+    details: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def extract_event(
+    orc: OpenRouterClient, model: str, transcript: str, *, today: str = ""
+) -> Event:
+    """One OpenRouter call -> a single calendar Event (found=False if none)."""
+    if not transcript.strip():
+        return Event(found=False)
+    raw = orc.create_chat_completion(model, build_event_prompt(transcript, today=today))
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict) or not data.get("found"):
+        return Event(found=False)
+    return Event(
+        found=True,
+        title=str(data.get("title", "")).strip(),
+        date=str(data.get("date", "")).strip(),
+        start_time=str(data.get("start_time", "")).strip(),
+        end_time=str(data.get("end_time", "")).strip(),
+        all_day=bool(data.get("all_day", False)),
+        location=str(data.get("location", "")).strip(),
+        details=str(data.get("details", "")).strip(),
+    )
 
 
 # ------------------------------- resolving --------------------------------
