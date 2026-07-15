@@ -68,11 +68,12 @@ def _chat(cid, **kw):
     return BeeperChat(**defaults)
 
 
-def _msg(is_sender, text="hi", *, mid="1", msg_type="TEXT", attachment=None, reactions=None, ts=0):
+def _msg(is_sender, text="hi", *, mid="1", msg_type="TEXT", attachment=None,
+         reactions=None, ts=0, is_deleted=False):
     return BeeperMessage(
         message_id=mid, sender_name="Them", is_sender=is_sender,
         text=text, timestamp_ms=ts, msg_type=msg_type,
-        attachment=attachment, reactions=reactions or [],
+        attachment=attachment, reactions=reactions or [], is_deleted=is_deleted,
     )
 
 
@@ -236,6 +237,22 @@ def test_chat_view_renders_image_with_caption():
     assert m2.text == ""  # description not dumped into the display text
     assert "Flat 26" in view2.transcript()
     assert "[image:" in view2.transcript()
+
+
+def test_chat_view_renders_deleted_message_as_context():
+    # A deleted/unsent message is kept as context (with original text if the
+    # network preserved it) instead of being dropped.
+    msgs = [
+        _msg(False, "wait ignore that", mid="d1", is_deleted=True),
+        _msg(False, "so anyway you free sat?", mid="m2"),
+    ]
+    view = inbox.chat_view(FakeClient(messages={"c": msgs}), "c")
+    assert view.messages[0].kind == "deleted"
+    assert "Deleted" in view.messages[0].text and "wait ignore that" in view.messages[0].text
+    assert "wait ignore that" in view.transcript()  # reaches the AI
+    # a tombstone with no preserved text still registers
+    v2 = inbox.chat_view(FakeClient(messages={"c": [_msg(False, "", mid="d2", is_deleted=True)]}), "c")
+    assert v2.messages[0].kind == "deleted" and "deleted" in v2.messages[0].text.lower()
 
 
 def test_chat_view_surfaces_reactions_and_editable():

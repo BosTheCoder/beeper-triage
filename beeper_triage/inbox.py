@@ -260,6 +260,21 @@ def _render_message(
     if m.msg_type == "REACTION":
         return None  # reactions surface on their target message's .reactions
 
+    if m.is_deleted:
+        # A retracted message is context: the AI should know something was said
+        # and then unsent. Show the original text if the network kept it.
+        content = clean_text(m.text)
+        return ChatMessage(
+            message_id=m.message_id,
+            sender=m.sender_name,
+            is_me=m.is_sender,
+            text=(f'🚫 Deleted: "{content}"' if content else "🚫 Message deleted"),
+            timestamp_ms=m.timestamp_ms,
+            kind="deleted",
+            reactions=list(m.reactions or []),
+            editable=False,
+        )
+
     if att.get("is_voice_note") or att.get("kind") == "voice" or m.msg_type == "VOICE":
         kind = "voice"
         dur = _fmt_duration(att.get("duration"))

@@ -38,6 +38,7 @@ class BeeperMessage:
     msg_type: str = "TEXT"  # TEXT / VOICE / REACTION / IMAGE / VIDEO / FILE / ...
     attachment: Optional[dict] = None  # {kind, is_voice_note, duration, mime, src_url, file_name}
     reactions: list = field(default_factory=list)  # emoji reaction keys on this message
+    is_deleted: bool = False  # message was deleted/unsent (a tombstone), when the network surfaces it
 
 
 @dataclass
@@ -401,6 +402,9 @@ class BeeperClient:
                         ).upper(),
                         attachment=self._extract_attachment(msg),
                         reactions=self._extract_reactions(msg),
+                        is_deleted=bool(
+                            self._get_attr(msg, "is_deleted", "isDeleted", default=False)
+                        ),
                     )
                 )
 
