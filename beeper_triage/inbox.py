@@ -86,6 +86,7 @@ class QueuedChat:
     is_muted: bool
     unread_count: int
     last_activity_ms: int
+    is_pinned: bool = False
 
     @classmethod
     def from_chat(cls, chat: BeeperChat) -> "QueuedChat":
@@ -97,6 +98,7 @@ class QueuedChat:
             is_muted=chat.is_muted,
             unread_count=chat.unread_count,
             last_activity_ms=chat.last_activity_ms,
+            is_pinned=chat.is_pinned,
         )
 
     def to_dict(self) -> dict:

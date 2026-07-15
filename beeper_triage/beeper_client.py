@@ -57,6 +57,7 @@ class BeeperChat:
     is_group: bool = False  # True for group chats (type == "group")
     network: Optional[str] = None  # Raw network from the chat (e.g. "whatsapp")
     is_archived: bool = False  # True when the chat is archived (out of inbox)
+    is_pinned: bool = False  # True when pinned — Beeper CANNOT archive a pinned chat
 
 
 class BeeperClient:
@@ -250,6 +251,9 @@ class BeeperClient:
                     ),
                     is_archived=bool(
                         self._get_attr(chat, "is_archived", "archived", default=False)
+                    ),
+                    is_pinned=bool(
+                        self._get_attr(chat, "is_pinned", "isPinned", default=False)
                     ),
                 )
             )

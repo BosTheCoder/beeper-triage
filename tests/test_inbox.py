@@ -137,6 +137,18 @@ def test_queue_keeps_only_unreplied_unarchived_1to1():
     assert [c.chat_id for c in q] == ["owe"]
 
 
+def test_queue_carries_pinned_flag():
+    # A pinned chat can't be archived in Beeper; the UI needs the flag to say so.
+    chats = [_chat("pinned", is_group=True, is_pinned=True), _chat("plain")]
+    q = inbox.build_queue(
+        FakeClient(chats), inbox.QueueFilters(groups=True), verify=False
+    )
+    by_id = {c.chat_id: c for c in q}
+    assert by_id["pinned"].is_pinned is True
+    assert by_id["plain"].is_pinned is False
+    assert by_id["pinned"].to_dict()["is_pinned"] is True  # reaches the browser
+
+
 def test_queue_groups_and_muted_toggles():
     chats = [_chat("g", is_group=True), _chat("m", is_muted=True), _chat("plain")]
     q = inbox.build_queue(
