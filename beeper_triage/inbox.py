@@ -162,6 +162,7 @@ class ChatMessage:
     kind: str = "text"  # text / voice / image / video / file
     reactions: list = field(default_factory=list)
     editable: bool = False  # my own text messages can be edited/unsent
+    media_src: Optional[str] = None  # raw attachment src_url (e.g. an image), for display
 
 
 @dataclass
@@ -227,11 +228,24 @@ def _fmt_duration(seconds) -> str:
 _ATTACH_LABEL = {"image": "📷 Photo", "video": "🎥 Video", "audio": "🔊 Audio", "file": "📎 File"}
 
 
-def _render_message(m: BeeperMessage, transcribe_fn: Optional[Callable]) -> Optional[ChatMessage]:
+def _is_image(att: dict, msg_type: str) -> bool:
+    return bool(
+        att.get("kind") == "image"
+        or (att.get("mime") or "").startswith("image/")
+        or msg_type == "IMAGE"
+    )
+
+
+def _render_message(
+    m: BeeperMessage,
+    transcribe_fn: Optional[Callable] = None,
+    caption_fn: Optional[Callable] = None,
+) -> Optional[ChatMessage]:
     """Turn a raw message into a display ChatMessage, or None to skip it."""
     kind = "text"
     text = clean_text(m.text)
     att = m.attachment or {}
+    media_src = None
 
     if m.msg_type == "REACTION":
         return None  # reactions surface on their target message's .reactions
@@ -247,9 +261,25 @@ def _render_message(m: BeeperMessage, transcribe_fn: Optional[Callable]) -> Opti
             except Exception:
                 transcript = ""
         text = f'{label} — "{transcript}"' if transcript else label
+    elif att and _is_image(att, m.msg_type):
+        kind = "image"
+        media_src = att.get("src_url")
+        caption = ""  # what's actually IN the image (vision) — feeds display + prompt
+        if caption_fn and media_src:
+            try:
+                caption = (caption_fn(media_src, m.message_id) or "").strip()
+            except Exception:
+                caption = ""
+        parts = ["📷 Photo"]
+        if text:  # a caption the sender typed with the image
+            parts.append(f'"{text}"')
+        if caption:
+            parts.append(f"— {caption}")
+        text = " ".join(parts)
     elif not text and att:
         kind = att.get("kind", "file")
         text = _ATTACH_LABEL.get(kind, "📎 Attachment")
+        media_src = att.get("src_url")
     elif not text:
         return None  # empty system/event message
 
@@ -262,6 +292,7 @@ def _render_message(m: BeeperMessage, transcribe_fn: Optional[Callable]) -> Opti
         kind=kind,
         reactions=list(m.reactions or []),
         editable=(m.is_sender and kind == "text"),
+        media_src=media_src,
     )
 
 
@@ -272,17 +303,19 @@ def chat_view(
     limit: int = 20,
     since_ms: Optional[int] = None,
     transcribe_fn: Optional[Callable] = None,
+    caption_fn: Optional[Callable] = None,
 ) -> ChatView:
     """Recent messages for a chat, oldest-first for display + prompting.
 
     `transcribe_fn(src_url, message_id) -> str` (optional) transcribes voice
-    notes so their content reaches the display and the prompt.
+    notes; `caption_fn(src_url, message_id) -> str` (optional) describes images,
+    so both reach the display and the prompt.
     """
     msgs = client.list_messages(chat_id, limit=limit, since_ms=since_ms)
     msgs = _oldest_first(msgs)
     out = []
     for m in msgs:
-        cm = _render_message(m, transcribe_fn)
+        cm = _render_message(m, transcribe_fn, caption_fn)
         if cm is not None:
             out.append(cm)
     return ChatView(chat_id=chat_id, messages=out)

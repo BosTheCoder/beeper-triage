@@ -122,7 +122,10 @@ def build_options_prompt(
         user += f"\nExtra steer from the user: {hint}\n"
     user += f"\n{transcript}"
     return [
-        OpenRouterMessage(role="system", content=system),
+        # The system prompt + style profile is identical across every draft call,
+        # so cache it: repeat calls in a session read it at ~0.1x cost. The
+        # transcript stays in the (uncached) user message.
+        OpenRouterMessage(role="system", content=system, cache=True),
         OpenRouterMessage(role="user", content=user),
     ]
 

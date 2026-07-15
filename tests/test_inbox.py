@@ -6,6 +6,23 @@ import pytest
 
 from beeper_triage.beeper_client import BeeperChat, BeeperMessage
 from beeper_triage import inbox
+from beeper_triage.openrouter_client import OpenRouterMessage
+from beeper_triage.prompts import build_options_prompt
+
+
+def test_openrouter_message_cache_payload():
+    plain = OpenRouterMessage(role="user", content="hi").to_payload()
+    assert plain == {"role": "user", "content": "hi"}
+    cached = OpenRouterMessage(role="system", content="rules", cache=True).to_payload()
+    block = cached["content"][0]
+    assert block["text"] == "rules"
+    assert block["cache_control"] == {"type": "ephemeral"}
+
+
+def test_options_prompt_marks_system_cacheable():
+    msgs = build_options_prompt("Me: hi", count=5, style="talks casual")
+    assert msgs[0].role == "system" and msgs[0].cache is True
+    assert msgs[1].role == "user" and msgs[1].cache is False  # transcript not cached
 
 
 def _chat(cid, **kw):
@@ -170,6 +187,23 @@ def test_chat_view_renders_voice_note_with_transcript():
     # with transcriber -> content included
     view2 = inbox.chat_view(c, "c", transcribe_fn=lambda url, mid: "yeah sounds good")
     assert 'yeah sounds good' in view2.messages[0].text
+
+
+def test_chat_view_renders_image_with_caption():
+    # Images are shown (media_src carried) and described (caption feeds display + prompt).
+    img = _msg(False, "None", mid="i1", msg_type="IMAGE",
+               attachment={"kind": "image", "mime": "image/jpeg", "src_url": "file://x.jpg"})
+    c = FakeClient(messages={"c": [img]})
+    # no caption fn -> photo placeholder, but src still carried for display
+    view = inbox.chat_view(c, "c")
+    m = view.messages[0]
+    assert m.kind == "image"
+    assert m.media_src == "file://x.jpg"
+    assert m.text == "📷 Photo"
+    # with a caption fn -> description reaches text (and thus the transcript/prompt)
+    view2 = inbox.chat_view(c, "c", caption_fn=lambda url, mid: "Party flyer: Sat 3pm, Flat 26")
+    assert "Party flyer: Sat 3pm, Flat 26" in view2.messages[0].text
+    assert "Flat 26" in view2.transcript()
 
 
 def test_chat_view_surfaces_reactions_and_editable():

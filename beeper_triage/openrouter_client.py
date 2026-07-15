@@ -14,10 +14,32 @@ class OpenRouterError(RuntimeError):
 
 @dataclass
 class OpenRouterMessage:
-    """Chat completion message payload."""
+    """Chat completion message payload.
+
+    Set ``cache=True`` to mark this message's content as a prompt-cache
+    breakpoint (Anthropic ``cache_control: ephemeral`` via OpenRouter). Use it on
+    the stable prefix (system prompt + style profile) so repeat calls in a triage
+    session read it at ~0.1x cost instead of re-sending it every time. Only worth
+    it above ~1024 tokens; below that OpenRouter silently ignores the marker.
+    """
 
     role: str
     content: str
+    cache: bool = False
+
+    def to_payload(self) -> dict:
+        if self.cache:
+            return {
+                "role": self.role,
+                "content": [
+                    {
+                        "type": "text",
+                        "text": self.content,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            }
+        return {"role": self.role, "content": self.content}
 
 
 class OpenRouterClient:
@@ -29,7 +51,7 @@ class OpenRouterClient:
     def create_chat_completion(self, model: str, messages: Iterable[OpenRouterMessage]) -> str:
         payload = {
             "model": model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [m.to_payload() for m in messages],
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",

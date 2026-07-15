@@ -592,6 +592,23 @@ class BeeperClient:
                 f"Failed to delete message via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
+    def resolve_asset_url(self, src_url: Optional[str]) -> Optional[str]:
+        """Resolve an attachment src_url to a local ``file://`` URL.
+
+        Voice notes already arrive as ``file://`` paths; images arrive as
+        ``mxc://`` Matrix URIs which Beeper resolves (and caches to disk) via
+        ``assets.download``. Returns None if it can't be resolved.
+        """
+        if not src_url:
+            return None
+        if src_url.startswith("file:"):
+            return src_url
+        try:
+            resp = self._client.assets.download(url=src_url)
+        except Exception:
+            return None
+        return self._get_attr(resp, "src_url", "srcURL", default=None)
+
     def get_message(self, chat_id: str, message_id: str) -> Any:
         try:
             return self._client.messages.retrieve(message_id, chat_id=chat_id)
