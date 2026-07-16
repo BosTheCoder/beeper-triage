@@ -52,6 +52,26 @@ def test_options_prompt_marks_system_cacheable():
     assert msgs[1].role == "user" and msgs[1].cache is False  # transcript not cached
 
 
+def test_opener_prompt_new_vs_existing():
+    from beeper_triage.prompts import OPENER_TYPES, build_opener_prompt
+    assert "opener" in OPENER_TYPES and "reconnect" in OPENER_TYPES
+    # New contact: signals first contact, no history.
+    new = build_opener_prompt("Benjamin", "uni mate, grab food")[1].content
+    assert "Benjamin" in new and "grab food" in new and "no prior conversation" in new
+    # Existing thread with a delay: leans on reconnect.
+    old = build_opener_prompt("Ben", history="Them: yo", reply_delay="3 months")[1].content
+    assert "3 months" in old and "reconnect" in old
+
+
+def test_opener_options_parses_opener_types():
+    from beeper_triage import inbox
+    class FakeORC:
+        def create_chat_completion(self, model, messages):
+            return '[{"type":"plan","text":"food fri?"},{"type":"opener","text":"yo!"}]'
+    drafts = inbox.opener_options(FakeORC(), "m", name="Ben", context="food")
+    assert [d.type for d in drafts] == ["plan", "opener"]  # opener types kept, not coerced
+
+
 def test_reconnect_type_and_gap_steer():
     from beeper_triage.prompts import REPLY_TYPES, build_options_prompt
     assert "reconnect" in REPLY_TYPES  # offered as a type

@@ -17,7 +17,13 @@ from typing import Callable, Iterable, Optional
 
 from .beeper_client import BeeperChat, BeeperClient, BeeperMessage
 from .openrouter_client import OpenRouterClient
-from .prompts import REPLY_TYPES, build_event_prompt, build_options_prompt
+from .prompts import (
+    OPENER_TYPES,
+    REPLY_TYPES,
+    build_event_prompt,
+    build_opener_prompt,
+    build_options_prompt,
+)
 
 
 # ----------------------------- queue building -----------------------------
@@ -432,16 +438,39 @@ def draft_options(
     return _parse_drafts(raw, count=count)
 
 
+def opener_options(
+    orc: OpenRouterClient,
+    model: str,
+    *,
+    name: str,
+    context: str = "",
+    count: int = 5,
+    style: str = "",
+    history: str = "",
+    reply_delay: str = "",
+) -> list[Draft]:
+    """One OpenRouter call -> up to `count` opener messages (the user is reaching
+    out first, not replying). Same {type,text} shape as reply drafts."""
+    messages = build_opener_prompt(
+        name, context, count=count, style=style, history=history, reply_delay=reply_delay
+    )
+    raw = orc.create_chat_completion(model, messages)
+    return _parse_drafts(raw, count=count, valid_types=OPENER_TYPES, fallback="opener")
+
+
 _OBJ_RE = re.compile(r"\{[^{}]*\}")
 
 
-def _parse_drafts(raw: str, *, count: int) -> list[Draft]:
+def _parse_drafts(
+    raw: str, *, count: int, valid_types: dict = REPLY_TYPES, fallback: str = "going"
+) -> list[Draft]:
     """Robustly pull a JSON array of {type,text} out of the model output.
 
     Tolerates a ```json fence and raw newlines inside string values (the model
     often emits multi-line reply text, which strict JSON rejects). Falls back to
     plucking individual {type,text} objects, then — only if the output is clearly
-    NOT JSON — to treating the whole thing as one draft. Never surfaces raw JSON."""
+    NOT JSON — to treating the whole thing as one draft. Never surfaces raw JSON.
+    ``valid_types``/``fallback`` swap the type vocabulary for openers vs replies."""
     payload = _extract_json_array(raw)
     items = payload if isinstance(payload, list) else _salvage_objects(raw)
 
@@ -454,8 +483,8 @@ def _parse_drafts(raw: str, *, count: int) -> list[Draft]:
         if not text:
             continue
         t = str(item.get("type", "")).strip().lower()
-        if t not in REPLY_TYPES:
-            t = "going"
+        if t not in valid_types:
+            t = fallback
         key = text.lower()
         if key in seen:
             continue
@@ -464,7 +493,7 @@ def _parse_drafts(raw: str, *, count: int) -> list[Draft]:
 
     if not drafts and raw.strip() and not _looks_like_json(raw):
         # Model wrote plain prose instead of JSON — use it as a single draft.
-        drafts.append(Draft(type="going", text=raw.strip()))
+        drafts.append(Draft(type=fallback, text=raw.strip()))
     return drafts[:count]
 
 

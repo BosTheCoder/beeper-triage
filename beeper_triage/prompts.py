@@ -174,6 +174,81 @@ _EVENT_SYSTEM = (
 )
 
 
+# ------------------------------- openers ----------------------------------
+# Reaching OUT (initiating), not replying. Distinct type set so the UI can tell
+# an opener from a reply, and so the model knows the intent is to start a thread.
+OPENER_TYPES: dict[str, str] = {
+    "opener": "A warm, natural first message to kick things off.",
+    "reconnect": (
+        "Acknowledge it's been a while and reopen warmly — for someone you've "
+        "spoken to before. Light, not grovelling."
+    ),
+    "plan": "Propose doing something specific together (food, a call, meeting up).",
+    "checkin": "A low-key 'how are you / been thinking of you' check-in.",
+}
+
+_OPENER_SYSTEM = (
+    "You are helping the user START a conversation — they are reaching out FIRST, "
+    "not replying to anything. Produce send-ready opener messages in the user's "
+    "own casual voice, with no preamble, no labels inside the text, and no emoji "
+    "unless that matches the user's style.\n\n"
+    "Return ONLY a JSON array (no markdown fence, no prose) of objects with keys "
+    '"type" and "text". Use only these types:\n'
+    + "\n".join(f'- "{k}": {v}' for k, v in OPENER_TYPES.items())
+    + "\n\nVARIETY IS THE POINT. Give a genuine spread — differ in tone, length, "
+    "and move (a plain hello / a hello + specific plan / a warm check-in). Never "
+    "two openers a person would read as 'the same message'. Order best-fit first."
+)
+
+
+def build_opener_prompt(
+    name: str,
+    context: str = "",
+    *,
+    count: int = 5,
+    style: str = "",
+    history: str = "",
+    reply_delay: str = "",
+) -> list[OpenRouterMessage]:
+    """Prompt for N opener messages (the user is initiating contact).
+
+    ``context`` is the user's one-line 'what it's about'; ``history`` is a recent
+    transcript when there's an existing thread (else the person is new to them).
+    """
+    system = _OPENER_SYSTEM
+    if style.strip():
+        system = f"{_OPENER_SYSTEM}\n\n{_STYLE_PREFIX}{style.strip()}"
+
+    who = name.strip() or "this person"
+    user = (
+        f"Draft {count} distinct opener messages the user can send to {who}, "
+        "ordered best-fit first. Each must be send-ready and meaningfully "
+        "different from the others.\n"
+    )
+    if context.strip():
+        user += f"\nWhat it's about: {context.strip()}\n"
+    if history.strip():
+        user += (
+            "\nThey've spoken before — recent history is below. Make the opener "
+            "fit naturally with it.\n"
+        )
+        if reply_delay:
+            user += (
+                f"It's been about {reply_delay} since they last spoke, so a "
+                "'reconnect' opener that lightly owns the gap fits well.\n"
+            )
+        user += f"\n{history.strip()}\n"
+    else:
+        user += (
+            "\nThe user has no prior conversation with this person — this is a "
+            "friendly first contact. Keep it natural, not overfamiliar.\n"
+        )
+    return [
+        OpenRouterMessage(role="system", content=system, cache=True),
+        OpenRouterMessage(role="user", content=user),
+    ]
+
+
 def build_event_prompt(transcript: str, today: str = "") -> list[OpenRouterMessage]:
     """Prompt to pull a single calendar event out of a transcript as JSON."""
     user = "Extract the calendar event from this conversation, if any.\n"

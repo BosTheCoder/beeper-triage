@@ -438,6 +438,46 @@ class BeeperClient:
 
         return results
 
+    def list_contacts(
+        self, account_id: str, query: str, *, limit: int = 8, timeout: float = 4.0
+    ) -> list[dict[str, Any]]:
+        """Fast local search of merged contacts on one account (no slow network
+        lookup, unlike ``search_contacts``). Capped at ``limit``; a per-call
+        ``timeout`` keeps a slow/unresponsive account from blocking.
+
+        Returns dicts with: id, full_name, phone_number, email, username,
+        cannot_message, is_self.
+        """
+        try:
+            # max_retries=0: a slow/dead account fails once at `timeout`, not
+            # timeout×(1+retries) — keeps the parallel search snappy.
+            client = self._client
+            try:
+                client = client.with_options(max_retries=0)
+            except Exception:
+                pass
+            result = client.accounts.contacts.list(
+                account_id=account_id, query=query, limit=limit, timeout=timeout
+            )
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to list contacts via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+        contacts: list[dict[str, Any]] = []
+        for user in result:  # cursor page — stop at limit so we don't auto-paginate
+            contacts.append({
+                "id": user.id,
+                "full_name": getattr(user, "full_name", None),
+                "phone_number": getattr(user, "phone_number", None),
+                "email": getattr(user, "email", None),
+                "username": getattr(user, "username", None),
+                "cannot_message": getattr(user, "cannot_message", None),
+                "is_self": getattr(user, "is_self", None),
+            })
+            if len(contacts) >= limit:
+                break
+        return contacts
+
     def search_contacts(self, account_id: str, query: str) -> list[dict[str, Any]]:
         """Search contacts on a specific account (e.g. by phone number).
 
