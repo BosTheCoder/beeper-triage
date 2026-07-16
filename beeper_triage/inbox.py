@@ -353,6 +353,11 @@ def _oldest_first(msgs: list[BeeperMessage]) -> list[BeeperMessage]:
 _GAP_MARK_MS = 3 * 60 * 60 * 1000  # mark a break of 3h+ between messages
 
 
+def humanize_gap(ms: int) -> str:
+    """Public alias: a rough '2 weeks'/'2 months' label for a millisecond gap."""
+    return _humanize_gap(ms)
+
+
 def _humanize_gap(ms: int) -> str:
     """A rough '2 weeks later' style label for a millisecond time gap."""
     s = ms / 1000
@@ -411,14 +416,18 @@ def draft_options(
     count: int = 5,
     hint: str = "",
     style: str = "",
+    reply_delay: str = "",
 ) -> list[Draft]:
     """One OpenRouter call -> up to `count` type-tagged drafts.
 
     ``style`` is an optional texting-style profile injected so drafts match the
-    user's voice."""
+    user's voice. ``reply_delay`` (human string, e.g. "2 months") makes one draft
+    acknowledge a long silence when the user is replying very late."""
     if not transcript.strip():
         return []
-    messages = build_options_prompt(transcript, count=count, hint=hint, style=style)
+    messages = build_options_prompt(
+        transcript, count=count, hint=hint, style=style, reply_delay=reply_delay
+    )
     raw = orc.create_chat_completion(model, messages)
     return _parse_drafts(raw, count=count)
 

@@ -71,6 +71,12 @@ REPLY_TYPES: dict[str, str] = {
         "closer to the time. NOT a decline — you may well go."
     ),
     "todo": "Acknowledge briefly ('on it!') when the message is really a task.",
+    "reconnect": (
+        "Restart after a long silence. Warmly and lightly own the gap ('ah this "
+        "got buried, sorry!' / 'been way too long') and reopen — breezy, NOT "
+        "grovelling or over-apologising. Only when the user is replying weeks/"
+        "months late."
+    ),
 }
 
 _OPTIONS_SYSTEM = (
@@ -109,12 +115,14 @@ _STYLE_PREFIX = "Here is how the user texts — match this voice exactly:\n"
 
 
 def build_options_prompt(
-    transcript: str, count: int = 5, hint: str = "", style: str = ""
+    transcript: str, count: int = 5, hint: str = "", style: str = "", reply_delay: str = ""
 ) -> list[OpenRouterMessage]:
     """Prompt for N type-tagged draft replies as a JSON array.
 
     ``style`` is an optional texting-style profile for the user; when provided
-    it is injected so every draft matches their voice.
+    it is injected so every draft matches their voice. ``reply_delay`` is a human
+    string (e.g. "2 months") for how long the user is replying AFTER the other
+    person's last message — when set, one draft acknowledges the gap.
     """
     system = _OPTIONS_SYSTEM
     if style.strip():
@@ -127,6 +135,14 @@ def build_options_prompt(
         f"{count}; only give fewer if you genuinely cannot add another useful, "
         "on-topic option.\n"
     )
+    if reply_delay:
+        user += (
+            f"\nTIMING: the user is replying about {reply_delay} after the other "
+            "person's last message — a long silence they let slip. Include exactly "
+            "ONE draft of type 'reconnect' that lightly owns the gap and restarts "
+            "warmly (breezy 'sorry, this got buried' energy — never grovelling or "
+            "over-apologising). Keep the other drafts normal.\n"
+        )
     if hint:
         user += f"\nExtra steer from the user: {hint}\n"
     user += f"\n{transcript}"

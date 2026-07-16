@@ -52,6 +52,17 @@ def test_options_prompt_marks_system_cacheable():
     assert msgs[1].role == "user" and msgs[1].cache is False  # transcript not cached
 
 
+def test_reconnect_type_and_gap_steer():
+    from beeper_triage.prompts import REPLY_TYPES, build_options_prompt
+    assert "reconnect" in REPLY_TYPES  # offered as a type
+    # No delay -> no timing steer in the user prompt.
+    plain = build_options_prompt("Them: yo", reply_delay="")[1].content
+    assert "TIMING" not in plain
+    # With a delay -> steer the model to include a reconnect draft.
+    late = build_options_prompt("Them: yo", reply_delay="2 months")[1].content
+    assert "2 months" in late and "reconnect" in late
+
+
 def _chat(cid, **kw):
     defaults = dict(
         chat_id=cid,
