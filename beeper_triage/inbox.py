@@ -138,7 +138,10 @@ def build_queue(
 
     candidates = visible[:verify_cap]
     verdicts: dict[str, Optional[bool]] = {}
-    workers = min(12, max(1, len(candidates)))
+    # This per-chat fan-out (one list_messages each) gates first paint, so run it
+    # wide — the Beeper bridge is local and handles the concurrency fine. Fewer
+    # waves = a noticeably faster queue load when many chats are visible.
+    workers = min(24, max(1, len(candidates)))
     if candidates:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
@@ -186,6 +189,9 @@ class ChatView:
             if m.kind == "image":
                 own = f"{m.text} " if m.text else ""
                 return f"{own}[image: {m.caption or 'a photo'}]"
+            if m.kind == "video":
+                own = f"{m.text} " if m.text else ""
+                return f"{own}[video]".strip()
             return m.text
 
         return format_transcript(
@@ -253,6 +259,14 @@ def _is_image(att: dict, msg_type: str) -> bool:
     )
 
 
+def _is_video(att: dict, msg_type: str) -> bool:
+    return bool(
+        att.get("kind") == "video"
+        or (att.get("mime") or "").startswith("video/")
+        or msg_type == "VIDEO"
+    )
+
+
 def _render_message(
     m: BeeperMessage,
     transcribe_fn: Optional[Callable] = None,
@@ -304,6 +318,12 @@ def _render_message(
                 img_caption = (caption_fn(media_src, m.message_id) or "").strip()
             except Exception:
                 img_caption = ""
+    elif att and _is_video(att, m.msg_type):
+        # Checked BEFORE the `not text` branch so a video WITH a caption isn't
+        # swallowed as a plain text message (which dropped the video entirely).
+        # `text` keeps the sender's caption (may be empty); the UI renders it inline.
+        kind = "video"
+        media_src = att.get("src_url")
     elif not text and att:
         kind = att.get("kind", "file")
         text = _ATTACH_LABEL.get(kind, "📎 Attachment")
