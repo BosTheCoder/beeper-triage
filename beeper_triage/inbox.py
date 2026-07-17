@@ -621,16 +621,20 @@ class ActionResult:
 
 
 def send(
-    client: BeeperClient, chat_id: str, text: str, *, dry_run: bool = False
+    client: BeeperClient, chat_id: str, text: str, *, dry_run: bool = False,
+    reply_to_message_id: Optional[str] = None,
 ) -> ActionResult:
     """Send a message. Does NOT archive — archiving right after a send is
     undone by the message re-activating the chat, so archive separately via
-    ``archive_reliable`` after the send has propagated (#9)."""
+    ``archive_reliable`` after the send has propagated (#9).
+
+    ``reply_to_message_id`` quotes an existing message (any message, including
+    one of your own) so the reply threads off it."""
     if not (text or "").strip():
         raise ValueError("send requires non-empty text")
     if dry_run:
         return ActionResult("send", chat_id, True, sent_text=text, detail="dry-run: would send")
-    client.send_message(chat_id, text=text)
+    client.send_message(chat_id, text=text, reply_to_message_id=reply_to_message_id)
     return ActionResult("send", chat_id, False, sent_text=text, detail="sent")
 
 
