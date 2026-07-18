@@ -35,6 +35,7 @@ class QueueFilters:
     groups: bool = False
     include_muted: bool = False
     networks: Optional[list[str]] = None  # lowercase slugs; None = all
+    include_archived: bool = False  # surface archived chats too (e.g. auto-archived SMS)
 
     def visible(self, chat: BeeperChat) -> bool:
         """Passes the cheap filters (archive / group / muted / network).
@@ -42,7 +43,7 @@ class QueueFilters:
         Does NOT decide 'owe a reply' — that's verified per chat against the
         last real message, because Beeper's preview flips to a reaction and
         makes replied chats look unreplied (see _owes_reply)."""
-        if chat.is_archived:
+        if chat.is_archived and not self.include_archived:
             return False
         if not self.groups and chat.is_group:
             return False
@@ -443,16 +444,19 @@ def draft_options(
     hint: str = "",
     style: str = "",
     reply_delay: str = "",
+    lessons: str = "",
 ) -> list[Draft]:
     """One OpenRouter call -> up to `count` type-tagged drafts.
 
     ``style`` is an optional texting-style profile injected so drafts match the
     user's voice. ``reply_delay`` (human string, e.g. "2 months") makes one draft
-    acknowledge a long silence when the user is replying very late."""
+    acknowledge a long silence when the user is replying very late. ``lessons`` is
+    the user's approved do/don't corrections (#8), injected as hard rules."""
     if not transcript.strip():
         return []
     messages = build_options_prompt(
-        transcript, count=count, hint=hint, style=style, reply_delay=reply_delay
+        transcript, count=count, hint=hint, style=style,
+        reply_delay=reply_delay, lessons=lessons,
     )
     raw = orc.create_chat_completion(model, messages)
     return _parse_drafts(raw, count=count)

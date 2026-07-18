@@ -112,21 +112,30 @@ _OPTIONS_SYSTEM = (
 )
 
 _STYLE_PREFIX = "Here is how the user texts — match this voice exactly:\n"
+_LESSONS_PREFIX = (
+    "The user has reviewed past drafts and left these corrections. Treat them as "
+    "hard rules — follow every one:\n"
+)
 
 
 def build_options_prompt(
-    transcript: str, count: int = 5, hint: str = "", style: str = "", reply_delay: str = ""
+    transcript: str, count: int = 5, hint: str = "", style: str = "",
+    reply_delay: str = "", lessons: str = "",
 ) -> list[OpenRouterMessage]:
     """Prompt for N type-tagged draft replies as a JSON array.
 
     ``style`` is an optional texting-style profile for the user; when provided
     it is injected so every draft matches their voice. ``reply_delay`` is a human
     string (e.g. "2 months") for how long the user is replying AFTER the other
-    person's last message — when set, one draft acknowledges the gap.
+    person's last message — when set, one draft acknowledges the gap. ``lessons``
+    is a distilled set of do/don't corrections the user has approved (#8), injected
+    as hard rules after the style block.
     """
     system = _OPTIONS_SYSTEM
     if style.strip():
-        system = f"{_OPTIONS_SYSTEM}\n\n{_STYLE_PREFIX}{style.strip()}"
+        system = f"{system}\n\n{_STYLE_PREFIX}{style.strip()}"
+    if lessons.strip():
+        system = f"{system}\n\n{_LESSONS_PREFIX}{lessons.strip()}"
 
     user = (
         f"Draft {count} distinct reply options for the conversation below, ordered "
