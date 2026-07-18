@@ -400,9 +400,15 @@ class BeeperClient:
                         is_sender=bool(self._get_attr(msg, "is_sender", default=False)),
                         text=str(self._get_attr(msg, "text", "body", default="")),
                         timestamp_ms=timestamp_ms,
+                        # A null/missing type means a system/membership event
+                        # ("You joined the chat", "X joined the chat" on RCS/groups),
+                        # NOT a real message. Tag it SYSTEM so the queue and thread
+                        # can skip it — otherwise "You joined the chat" (is_sender=True,
+                        # and often timestamped just after the real last message) makes
+                        # a chat you owe a reply to look already-answered.
                         msg_type=str(
-                            self._get_attr(msg, "type", "message_type", default="TEXT")
-                            or "TEXT"
+                            self._get_attr(msg, "type", "message_type", default="")
+                            or "SYSTEM"
                         ).upper(),
                         attachment=self._extract_attachment(msg),
                         reactions=self._extract_reactions(msg),

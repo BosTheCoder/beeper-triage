@@ -74,7 +74,9 @@ def _owes_reply(client: BeeperClient, chat_id: str) -> Optional[bool]:
     except Exception:
         return None
     for m in reversed(_oldest_first(msgs)):
-        if m.msg_type == "REACTION":
+        # Ignore reactions and system/membership events ("You joined the chat"),
+        # which otherwise masquerade as the last real message.
+        if m.msg_type in ("REACTION", "SYSTEM"):
             continue
         return not m.is_sender
     return False
@@ -282,6 +284,9 @@ def _render_message(
 
     if m.msg_type == "REACTION":
         return None  # reactions surface on their target message's .reactions
+
+    if m.msg_type == "SYSTEM" and not att:
+        return None  # system/membership event ("You joined the chat") — not a message
 
     if m.is_deleted:
         # A retracted message is context: the AI should know something was said
