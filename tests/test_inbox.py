@@ -282,6 +282,31 @@ def test_chat_view_renders_image_with_caption():
     assert "[image:" in view2.transcript()
 
 
+def test_chat_view_renders_forwarded_file_with_text():
+    # A forwarded PDF/doc: WhatsApp puts "↷ Forwarded" in .text, so the file used
+    # to fall through the `not text` guard and get dropped (attachment lost). It
+    # must render as a downloadable file (media_src + file_name carried) and the
+    # filename must reach the AI transcript so a draft can acknowledge it.
+    f = _msg(False, "↷ Forwarded", mid="f1", msg_type="FILE",
+             attachment={"kind": "file", "mime": "application/pdf",
+                         "src_url": "mxc://x", "file_name": "burial programme.pdf"})
+    view = inbox.chat_view(FakeClient(messages={"c": [f]}), "c")
+    m = view.messages[0]
+    assert m.kind == "file"
+    assert m.media_src == "mxc://x"
+    assert m.file_name == "burial programme.pdf"
+    assert "burial programme.pdf" in view.transcript()
+    assert "[file:" in view.transcript()
+
+
+def test_chat_view_renders_file_without_text_uses_filename_label():
+    f = _msg(False, "None", mid="f2", msg_type="FILE",
+             attachment={"kind": "file", "src_url": "mxc://y", "file_name": "invoice.pdf"})
+    m = inbox.chat_view(FakeClient(messages={"c": [f]}), "c").messages[0]
+    assert m.kind == "file" and m.media_src == "mxc://y"
+    assert m.text == "📎 invoice.pdf"
+
+
 def test_chat_view_renders_deleted_message_as_context():
     # A deleted/unsent message is kept as context (with original text if the
     # network preserved it) instead of being dropped.

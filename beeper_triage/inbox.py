@@ -178,6 +178,7 @@ class ChatMessage:
     editable: bool = False  # my own text messages can be edited/unsent
     media_src: Optional[str] = None  # raw attachment src_url (e.g. an image), for display
     caption: str = ""  # AI vision description of an image — feeds the prompt, hidden in UI by default
+    file_name: str = ""  # original filename of a non-media attachment (PDF/doc), for the download chip
 
 
 @dataclass
@@ -195,6 +196,9 @@ class ChatView:
             if m.kind == "video":
                 own = f"{m.text} " if m.text else ""
                 return f"{own}[video]".strip()
+            if m.kind == "file":
+                own = f"{m.text} " if (m.text and not m.text.startswith("📎")) else ""
+                return f"{own}[file: {m.file_name or 'a document'}]".strip()
             return m.text
 
         return format_transcript(
@@ -281,6 +285,7 @@ def _render_message(
     att = m.attachment or {}
     media_src = None
     img_caption = ""
+    file_name = ""
 
     if m.msg_type == "REACTION":
         return None  # reactions surface on their target message's .reactions
@@ -330,6 +335,16 @@ def _render_message(
         # `text` keeps the sender's caption (may be empty); the UI renders it inline.
         kind = "video"
         media_src = att.get("src_url")
+    elif att and (m.msg_type == "FILE" or att.get("src_url") or att.get("file_name")):
+        # Any non-media attachment (PDF, doc, forwarded file). Checked BEFORE the
+        # `not text` guard so a forwarded file WITH text (WhatsApp stuffs
+        # "↷ Forwarded" into `.text`) isn't swallowed as a plain text message and
+        # dropped — the same trap videos used to hit.
+        kind = "file"
+        media_src = att.get("src_url")
+        file_name = att.get("file_name") or ""
+        if not text:
+            text = f"📎 {file_name}" if file_name else _ATTACH_LABEL.get(att.get("kind", "file"), "📎 File")
     elif not text and att:
         kind = att.get("kind", "file")
         text = _ATTACH_LABEL.get(kind, "📎 Attachment")
@@ -348,6 +363,7 @@ def _render_message(
         editable=(m.is_sender and kind == "text"),
         media_src=media_src,
         caption=img_caption,
+        file_name=file_name,
     )
 
 
