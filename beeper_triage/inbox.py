@@ -36,6 +36,7 @@ class QueueFilters:
     include_muted: bool = False
     networks: Optional[list[str]] = None  # lowercase slugs; None = all
     include_archived: bool = False  # surface archived chats too (e.g. auto-archived SMS)
+    oldest_first: bool = False  # longest-waiting chats first instead of most recent
 
     def visible(self, chat: BeeperChat) -> bool:
         """Passes the cheap filters (archive / group / muted / network).
@@ -123,7 +124,8 @@ def build_queue(
     verify: bool = True,
     verify_cap: int = 150,
 ) -> list[QueuedChat]:
-    """Return the ordered conveyor belt of chats to triage (recent first).
+    """Return the ordered conveyor belt of chats to triage (recent first, or
+    longest-waiting first with ``filters.oldest_first``).
 
     When ``verify`` is on, each visible chat's 'owe a reply' status is confirmed
     against its last real (non-reaction) message in parallel, so reaction-only
@@ -133,7 +135,11 @@ def build_queue(
     filters = filters or QueueFilters()
     chats = client.list_chats(use_cache=use_cache)
     visible = [c for c in chats if filters.visible(c)]
-    visible.sort(key=lambda c: c.last_activity_ms, reverse=True)
+    # Sort BEFORE the verify_cap/limit slices below: those cut from the tail, so
+    # in oldest-first mode the ordering has to be settled first or the caps would
+    # keep the most recent chats and drop exactly the long-waiting ones you asked
+    # to see.
+    visible.sort(key=lambda c: c.last_activity_ms, reverse=not filters.oldest_first)
 
     if not verify:
         kept = [c for c in visible if _needs_reply(c)]

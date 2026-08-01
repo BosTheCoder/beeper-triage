@@ -200,6 +200,27 @@ def test_queue_network_filter_and_recency_order():
     assert [c.chat_id for c in q] == ["new", "old"]
 
 
+def test_queue_oldest_first_reverses_order():
+    chats = [_chat("old", last_activity_ms=1), _chat("mid", last_activity_ms=5),
+             _chat("new", last_activity_ms=9)]
+    q = inbox.build_queue(
+        FakeClient(chats), inbox.QueueFilters(oldest_first=True), verify=False
+    )
+    assert [c.chat_id for c in q] == ["old", "mid", "new"]
+
+
+def test_queue_oldest_first_caps_from_the_oldest_end():
+    # The cap must bite the NEW end in oldest mode — otherwise "go from my
+    # oldest" would really mean "oldest of the most recent N", i.e. never reach
+    # the chats that have actually been waiting longest.
+    chats = [_chat(f"c{i}", last_activity_ms=i) for i in range(5)]
+    q = inbox.build_queue(
+        FakeClient(chats), inbox.QueueFilters(oldest_first=True),
+        verify=False, limit=2,
+    )
+    assert [c.chat_id for c in q] == ["c0", "c1"]
+
+
 def test_queue_verify_ignores_trailing_reaction():
     # #3: my message stands, they only reacted after -> I do NOT owe a reply.
     chats = [_chat("reacted-only"), _chat("they-spoke")]
