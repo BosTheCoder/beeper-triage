@@ -270,11 +270,43 @@ def build_event_prompt(transcript: str, today: str = "") -> list[OpenRouterMessa
     ]
 
 
+_TASK_SYSTEM = (
+    "You turn a chat conversation into ONE actionable to-do item for the user's "
+    "task manager. Return ONLY a JSON object (no markdown fence, no prose) with "
+    "these keys:\n"
+    '- "title": the task as a short imperative line, as it will read in a task '
+    'list (e.g. "Send Loyce the deposit receipt"). Under ~60 characters, no '
+    "trailing full stop.\n"
+    '- "body": the supporting detail. Quote the lines that make the task make '
+    'sense verbatim, one per line as "Name: what they said", then any dates, '
+    "times, amounts, addresses or names needed to act on it. Only what matters "
+    "— this is not a summary of the whole chat.\n"
+    "Write it for the user, about what THEY need to do. Never invent details "
+    "that aren't in the transcript."
+)
+
+
 def build_todo_prompt(transcript: str) -> list[OpenRouterMessage]:
     """Build prompt for acknowledge + todo flow."""
     return [
         OpenRouterMessage(role="system", content=_TODO_SYSTEM),
         OpenRouterMessage(role="user", content=transcript),
+    ]
+
+
+def build_task_prompt(transcript: str, today: str = "") -> list[OpenRouterMessage]:
+    """Prompt to turn a transcript into a {title, body} to-do item as JSON.
+
+    Distinct from ``build_todo_prompt``, which returns a reply and a note split
+    on '---' for the CLI's acknowledge-and-note flow. This one gives a task
+    manager the two fields it actually stores (title + content) separately."""
+    user = "Turn this conversation into one to-do item.\n"
+    if today:
+        user += f"Today's date is {today} (use it to resolve dates like 'Friday').\n"
+    user += f"\n{transcript}"
+    return [
+        OpenRouterMessage(role="system", content=_TASK_SYSTEM, cache=True),
+        OpenRouterMessage(role="user", content=user),
     ]
 
 

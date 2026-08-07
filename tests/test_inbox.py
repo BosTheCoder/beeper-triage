@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from beeper_triage.beeper_client import BeeperChat, BeeperMessage
+from beeper_triage.beeper_client import BeeperChat, BeeperLabel, BeeperMessage
 from beeper_triage import inbox
 from beeper_triage.openrouter_client import OpenRouterMessage
 from beeper_triage.prompts import build_options_prompt
@@ -100,18 +100,21 @@ def _chat(cid, **kw):
 
 
 def _msg(is_sender, text="hi", *, mid="1", msg_type="TEXT", attachment=None,
-         reactions=None, ts=0, is_deleted=False):
+         reactions=None, ts=0, is_deleted=False, is_hidden=False):
     return BeeperMessage(
         message_id=mid, sender_name="Them", is_sender=is_sender,
         text=text, timestamp_ms=ts, msg_type=msg_type,
         attachment=attachment, reactions=reactions or [], is_deleted=is_deleted,
+        is_hidden=is_hidden,
     )
 
 
 class FakeClient:
-    def __init__(self, chats=None, messages=None):
+    def __init__(self, chats=None, messages=None, labels=None):
         self._chats = chats or []
         self._messages = messages or {}
+        self._labels = labels or []
+        self.label_reads = 0
         self.sent = []
         self.archived = []
         self.reacted = []
@@ -123,6 +126,10 @@ class FakeClient:
 
     def list_messages(self, chat_id, limit=None, since_ms=None):
         return list(self._messages.get(chat_id, []))
+
+    def list_labels(self, use_cache=True):
+        self.label_reads += 1
+        return list(self._labels)
 
     def send_message(self, chat_id, text=None, **kw):
         self.sent.append((chat_id, text))
@@ -525,3 +532,114 @@ def test_resolve_send_requires_text():
 def test_resolve_rejects_unknown_action():
     with pytest.raises(ValueError):
         inbox.resolve(FakeClient(), "c", "nope")
+
+
+# ------------------------------ label filter ------------------------------
+
+def _label(lid, title, chat_ids):
+    return BeeperLabel(label_id=lid, title=title, chat_ids=set(chat_ids))
+
+
+def test_visible_label_filter_is_set_membership():
+    f = inbox.QueueFilters(label_chat_ids={"in"})
+    assert f.visible(_chat("in")) is True
+    assert f.visible(_chat("out")) is False
+    # No label asked for -> every chat passes (None, not an empty set).
+    assert inbox.QueueFilters().visible(_chat("out")) is True
+
+
+def test_visible_label_and_network_are_anded():
+    # "WhatsApp AND High Priority" — either clause alone is not enough.
+    f = inbox.QueueFilters(networks=["whatsapp"], label_chat_ids={"wa-hp", "tg-hp"})
+    assert f.visible(_chat("wa-hp", network="whatsapp")) is True
+    assert f.visible(_chat("tg-hp", network="telegram")) is False   # right label, wrong net
+    assert f.visible(_chat("wa-plain", network="whatsapp")) is False  # right net, no label
+
+
+def test_resolve_label_chat_ids_unions_the_named_labels():
+    c = FakeClient(labels=[
+        _label("hp", "High Priority", ["a", "b"]),
+        _label("later", "Later", ["c"]),
+        _label("other", "Other", ["z"]),
+    ])
+    assert inbox.resolve_label_chat_ids(c, ["hp", "later"]) == {"a", "b", "c"}
+    assert inbox.resolve_label_chat_ids(c, []) == set()
+
+
+def test_queue_filters_by_label_id_without_a_per_chat_call():
+    chats = [_chat("a"), _chat("b"), _chat("z")]
+    c = FakeClient(chats, labels=[_label("hp", "High Priority", ["a", "b"])])
+    q = inbox.build_queue(c, inbox.QueueFilters(labels=["hp"]), verify=False)
+    assert {x.chat_id for x in q} == {"a", "b"}
+    assert c.label_reads == 1  # one read for the whole queue, not one per chat
+
+
+def test_resolve_labels_leaves_a_caller_supplied_mapping_alone():
+    # The web app may already hold the label -> chats mapping; don't re-fetch.
+    c = FakeClient(labels=[_label("hp", "High Priority", ["a"])])
+    f = inbox.QueueFilters(labels=["hp"], label_chat_ids={"b"}).resolve_labels(c)
+    assert f.label_chat_ids == {"b"}
+    assert c.label_reads == 0
+
+
+# ------------------------------ last_real_ms ------------------------------
+
+def test_last_real_ms_ignores_a_trailing_reaction():
+    # The archive ledger's regression: Beeper bumps last_activity on a reaction,
+    # so comparing against it resurrects a chat that nobody actually messaged.
+    chats = [_chat("c", last_activity_ms=300)]
+    messages = {"c": [
+        _msg(True, "my reply", ts=100),
+        _msg(False, "they asked", ts=200),
+        _msg(False, "None", mid="r", msg_type="REACTION", ts=300),
+    ]}
+    q = inbox.build_queue(FakeClient(chats, messages), verify=True)
+    assert q[0].last_real_ms == 200          # the real message, not the reaction
+    assert q[0].last_activity_ms == 300      # what Beeper reports, kept as-is
+    assert q[0].to_dict()["last_real_ms"] == 200  # serialises for the browser
+
+
+def test_last_real_ms_ignores_hidden_and_system_events():
+    chats = [_chat("c", last_activity_ms=400)]
+    messages = {"c": [
+        _msg(False, "you about?", ts=100),
+        _msg(True, "hidden receipt", mid="h", ts=200, is_hidden=True),
+        _msg(True, "You joined the chat", mid="s", msg_type="SYSTEM", ts=400),
+    ]}
+    q = inbox.build_queue(FakeClient(chats, messages), verify=True)
+    assert [x.chat_id for x in q] == ["c"]   # still owed — neither event is a reply
+    assert q[0].last_real_ms == 100
+
+
+def test_last_real_ms_falls_back_to_last_activity_when_unverified():
+    chats = [_chat("c", last_activity_ms=777)]
+    q = inbox.build_queue(FakeClient(chats), verify=False)
+    assert q[0].last_real_ms == 777
+
+
+# -------------------------------- extract_todo -----------------------------
+
+def test_extract_todo_returns_title_and_body():
+    orc = FakeORC('{"title": "Send Loyce the receipt", "body": "Loyce: can you send the receipt?"}')
+    todo = inbox.extract_todo(orc, "m", "Loyce: can you send the receipt?")
+    assert todo.title == "Send Loyce the receipt"
+    assert "can you send the receipt" in todo.body
+    assert todo.to_dict() == {"title": todo.title, "body": todo.body}
+
+
+def test_extract_todo_prompt_caches_the_system_prefix():
+    orc = FakeORC('{"title": "t", "body": "b"}')
+    inbox.extract_todo(orc, "m", "Them: yo", today="2026-08-07")
+    _model, messages = orc.calls[0]
+    assert messages[0].role == "system" and messages[0].cache is True
+    assert messages[1].role == "user" and messages[1].cache is False
+    assert "2026-08-07" in messages[1].content and "Them: yo" in messages[1].content
+
+
+def test_extract_todo_survives_prose_and_empty_input():
+    prose = FakeORC("Chase the deposit\nRichard owes £4,250 back")
+    todo = inbox.extract_todo(prose, "m", "Them: yo")
+    assert todo.title == "Chase the deposit" and "4,250" in todo.body
+    empty = FakeORC("{}")
+    assert inbox.extract_todo(empty, "m", "   ").title == ""
+    assert empty.calls == []  # no transcript -> no LLM call

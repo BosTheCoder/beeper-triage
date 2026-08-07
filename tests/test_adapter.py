@@ -4,7 +4,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from beeper_triage.beeper_client import BeeperClient, BeeperSDKError
+from beeper_triage.beeper_client import (
+    _LABELS_CACHE,
+    BeeperClient,
+    BeeperSDKError,
+    _attachment_type_for_mime,
+)
 
 
 def _adapter():
@@ -320,3 +325,140 @@ def test_list_accounts_use_cache_false_bypasses(tmp_path, monkeypatch):
     c.list_accounts()
     c.list_accounts(use_cache=False)
     assert c._client.accounts.list.call_count == 2
+
+
+# --- attachment type hints -------------------------------------------------
+
+def test_attachment_type_gif_is_its_own_type():
+    # A GIF sent as a plain "image" gets retracted by the WhatsApp bridge; the
+    # SDK has a distinct "gif" type for it.
+    assert _attachment_type_for_mime("image/gif") == "gif"
+    assert _attachment_type_for_mime("image/GIF; charset=binary") == "gif"
+
+
+def test_attachment_type_prefix_map_unchanged():
+    assert _attachment_type_for_mime("image/png") == "image"
+    assert _attachment_type_for_mime("video/mp4") == "video"
+    assert _attachment_type_for_mime("audio/ogg") == "audio"
+    assert _attachment_type_for_mime("application/pdf") == "file"
+    assert _attachment_type_for_mime(None) == "file"
+
+
+def test_send_message_tags_a_gif_as_gif(tmp_path):
+    c = _adapter()
+    gif = tmp_path / "goat.gif"
+    gif.write_bytes(b"GIF89a")
+    c._client.assets.upload.return_value = MagicMock(upload_id="up1")
+    c.send_message("!chat", attachment_path=gif)
+    kwargs = c._client.messages.send.call_args.kwargs
+    assert kwargs["attachment"]["type"] == "gif"
+    assert kwargs["attachment"]["mime_type"] == "image/gif"
+
+
+# --- labels (Matrix account data) ------------------------------------------
+
+class _User:
+    def __init__(self, uid):
+        self.id = uid
+
+
+class _Bridge:
+    def __init__(self, btype):
+        self.type = btype
+
+
+class _Account:
+    def __init__(self, account_id, uid, btype):
+        self.account_id = account_id
+        self.user = _User(uid)
+        self.bridge = _Bridge(btype)
+
+
+_LABELS_PAYLOAD = {
+    "20b66533-304c-4091-b2a7-ff8212db016d": {
+        "createdAt": 1773142218010,
+        "title": "High Priority",
+        "rooms": ["!a:beeper.local", "!b:beeper.local"],
+        "isShownInInbox": True,
+    }
+}
+
+
+def _labelled(payload, accounts=None):
+    _LABELS_CACHE.clear()  # the 60s cache is module-level; don't leak between tests
+    c = _adapter()
+    c._matrix_uid = None
+    c._client.accounts.list.return_value = accounts or [
+        _Account("whatsapp", "447730784352", "whatsapp"),
+        _Account("matrix", "@me:beeper.com", "matrix"),
+    ]
+    c.raw_request = MagicMock(return_value=payload)
+    return c
+
+
+def test_matrix_user_id_from_the_matrix_account():
+    c = _labelled(_LABELS_PAYLOAD)
+    assert c.matrix_user_id() == "@me:beeper.com"
+    # memoised — the accounts list is not re-read
+    assert c.matrix_user_id() == "@me:beeper.com"
+    assert c._client.accounts.list.call_count == 1
+
+
+def test_list_labels_reads_matrix_account_data():
+    c = _labelled(_LABELS_PAYLOAD)
+    labels = c.list_labels(use_cache=False)
+    assert [(l.label_id, l.title) for l in labels] == [
+        ("20b66533-304c-4091-b2a7-ff8212db016d", "High Priority")
+    ]
+    assert labels[0].chat_ids == {"!a:beeper.local", "!b:beeper.local"}
+    path = c.raw_request.call_args.args[1]
+    assert path == (
+        "/_matrix/client/v3/user/@me:beeper.com/account_data/com.beeper.labels"
+    )
+
+
+def test_list_labels_missing_event_is_no_labels_not_an_error():
+    # Beeper answers HTTP 500 when the user has never made a label.
+    c = _labelled(_LABELS_PAYLOAD)
+    c.raw_request = MagicMock(side_effect=BeeperSDKError(
+        'HTTP 500 GET /_matrix/... failed: InternalServerError: '
+        '{"errcode": "M_UNKNOWN", "error": "getAccountData failed: '
+        'No account data event found with type \"com.beeper.labels\""}'
+    ))
+    assert c.list_labels(use_cache=False) == []
+
+
+def test_list_labels_other_errors_still_raise():
+    c = _labelled(_LABELS_PAYLOAD)
+    c.raw_request = MagicMock(side_effect=BeeperSDKError("HTTP 403 GET ... failed"))
+    with pytest.raises(BeeperSDKError):
+        c.list_labels(use_cache=False)
+
+
+def test_list_labels_tolerates_malformed_payload():
+    c = _labelled({
+        "ok": {"title": "Keep", "rooms": ["!a:beeper.local", None]},
+        "no-rooms": {"title": "Empty"},
+        "bad-rooms": {"title": "Odd", "rooms": "not-a-list"},
+        "untitled": {"rooms": []},
+        "not-a-dict": "nope",
+    })
+    by_id = {l.label_id: l for l in c.list_labels(use_cache=False)}
+    assert "not-a-dict" not in by_id  # skipped, not fatal
+    assert by_id["ok"].chat_ids == {"!a:beeper.local"}
+    assert by_id["no-rooms"].chat_ids == set()
+    assert by_id["bad-rooms"].chat_ids == set()
+    assert by_id["untitled"].title == "untitled"  # id stands in for a missing title
+
+
+def test_list_labels_returns_empty_without_a_matrix_account():
+    c = _labelled(_LABELS_PAYLOAD, accounts=[_Account("whatsapp", "4477", "whatsapp")])
+    assert c.list_labels(use_cache=False) == []
+    c.raw_request.assert_not_called()
+
+
+def test_list_labels_caches_in_process():
+    c = _labelled(_LABELS_PAYLOAD)
+    c.list_labels()
+    c.list_labels()
+    assert c.raw_request.call_count == 1

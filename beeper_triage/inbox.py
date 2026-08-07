@@ -23,6 +23,7 @@ from .prompts import (
     build_event_prompt,
     build_opener_prompt,
     build_options_prompt,
+    build_task_prompt,
 )
 
 
@@ -37,13 +38,22 @@ class QueueFilters:
     networks: Optional[list[str]] = None  # lowercase slugs; None = all
     include_archived: bool = False  # surface archived chats too (e.g. auto-archived SMS)
     oldest_first: bool = False  # longest-waiting chats first instead of most recent
+    labels: Optional[list[str]] = None  # Beeper label ids; None = all
+    label_chat_ids: Optional[set[str]] = None  # `labels` already resolved to chat_ids
 
     def visible(self, chat: BeeperChat) -> bool:
-        """Passes the cheap filters (archive / group / muted / network).
+        """Passes the cheap filters (archive / group / muted / network / label).
 
         Does NOT decide 'owe a reply' — that's verified per chat against the
         last real message, because Beeper's preview flips to a reaction and
-        makes replied chats look unreplied (see _owes_reply)."""
+        makes replied chats look unreplied (see _owes_reply).
+
+        The label check is a plain set-membership test, never an API call: a
+        chat carries no label of its own, the label carries a list of chats. So
+        a caller passes EITHER ``labels`` (ids, resolved once by
+        ``resolve_labels``) OR ``label_chat_ids`` directly if it already has the
+        mapping. Semantics: union within labels, AND with networks — "WhatsApp
+        *and* High Priority"."""
         if chat.is_archived and not self.include_archived:
             return False
         if not self.groups and chat.is_group:
@@ -52,11 +62,34 @@ class QueueFilters:
             return False
         if self.networks and _network_slug(chat.network) not in self.networks:
             return False
+        if self.label_chat_ids is not None and chat.chat_id not in self.label_chat_ids:
+            return False
         return True
+
+    def resolve_labels(self, client: BeeperClient) -> "QueueFilters":
+        """Turn ``labels`` (ids) into ``label_chat_ids`` once, before filtering.
+
+        No-op when no labels are asked for, or when the caller already supplied
+        the chat_ids. Returns self so it can be chained."""
+        if self.labels and self.label_chat_ids is None:
+            self.label_chat_ids = resolve_label_chat_ids(client, self.labels)
+        return self
 
     # kept for callers/tests that want the cheap preview-based check
     def wants(self, chat: BeeperChat) -> bool:
         return self.visible(chat) and _needs_reply(chat)
+
+
+def resolve_label_chat_ids(client: BeeperClient, label_ids: Iterable[str]) -> set[str]:
+    """Every chat_id filed under any of ``label_ids`` (one cached label read)."""
+    wanted = {str(x) for x in label_ids if x}
+    if not wanted:
+        return set()
+    out: set[str] = set()
+    for label in client.list_labels():
+        if label.label_id in wanted:
+            out |= set(label.chat_ids)
+    return out
 
 
 def _needs_reply(chat: BeeperChat) -> bool:
@@ -65,22 +98,44 @@ def _needs_reply(chat: BeeperChat) -> bool:
     return not chat.preview_is_sender
 
 
+def _is_real_message(m: BeeperMessage) -> bool:
+    """A message a person actually sent — not bookkeeping.
+
+    Excludes reactions and system/membership events ("You joined the chat"),
+    which otherwise masquerade as the last real message, plus anything Beeper
+    marks hidden (read receipts and friends). Note that a message the SDK hands
+    over with a null ``type`` is coerced to SYSTEM in ``list_messages``, so it
+    is filtered here too."""
+    if m.msg_type in ("REACTION", "SYSTEM"):
+        return False
+    return not m.is_hidden
+
+
+def _scan_recent(client: BeeperClient, chat_id: str) -> tuple[Optional[bool], int]:
+    """(do I owe a reply?, timestamp of the last REAL message) for one chat.
+
+    Both answers come off the same message read — the queue's per-chat fan-out
+    already pays for it, so the timestamp costs no extra call. The timestamp is
+    what an archive ledger must compare against: ``chat.last_activity_ms`` is
+    bumped by reactions and hidden events, so a chat archived after a reply
+    comes straight back. Returns (None, 0) if the read fails."""
+    try:
+        msgs = client.list_messages(chat_id, limit=8)
+    except Exception:
+        return None, 0
+    for m in reversed(_oldest_first(msgs)):
+        if not _is_real_message(m):
+            continue
+        return (not m.is_sender), m.timestamp_ms
+    return False, 0
+
+
 def _owes_reply(client: BeeperClient, chat_id: str) -> Optional[bool]:
     """True if the last NON-reaction message is from them. None on error.
 
     This is the reliable 'do I owe a reply' check: it ignores reaction-only
     activity that makes an already-replied chat look unanswered (#3)."""
-    try:
-        msgs = client.list_messages(chat_id, limit=8)
-    except Exception:
-        return None
-    for m in reversed(_oldest_first(msgs)):
-        # Ignore reactions and system/membership events ("You joined the chat"),
-        # which otherwise masquerade as the last real message.
-        if m.msg_type in ("REACTION", "SYSTEM"):
-            continue
-        return not m.is_sender
-    return False
+    return _scan_recent(client, chat_id)[0]
 
 
 def _network_slug(network: Optional[str]) -> str:
@@ -97,9 +152,15 @@ class QueuedChat:
     unread_count: int
     last_activity_ms: int
     is_pinned: bool = False
+    # Timestamp of the last REAL message (no reactions, no system or hidden
+    # events). `last_activity_ms` is bumped by all of those, so anything
+    # deciding "has this chat genuinely moved since I archived it" must compare
+    # against this instead. Falls back to last_activity_ms when the per-chat
+    # verification is off or errored.
+    last_real_ms: int = 0
 
     @classmethod
-    def from_chat(cls, chat: BeeperChat) -> "QueuedChat":
+    def from_chat(cls, chat: BeeperChat, *, last_real_ms: int = 0) -> "QueuedChat":
         return cls(
             chat_id=chat.chat_id,
             title=chat.title,
@@ -109,6 +170,7 @@ class QueuedChat:
             unread_count=chat.unread_count,
             last_activity_ms=chat.last_activity_ms,
             is_pinned=chat.is_pinned,
+            last_real_ms=last_real_ms,
         )
 
     def to_dict(self) -> dict:
@@ -133,6 +195,7 @@ def build_queue(
     preview heuristic if a per-chat check errors or verification is off.
     """
     filters = filters or QueueFilters()
+    filters.resolve_labels(client)
     chats = client.list_chats(use_cache=use_cache)
     visible = [c for c in chats if filters.visible(c)]
     # Sort BEFORE the verify_cap/limit slices below: those cut from the tail, so
@@ -143,10 +206,13 @@ def build_queue(
 
     if not verify:
         kept = [c for c in visible if _needs_reply(c)]
-        return [QueuedChat.from_chat(c) for c in kept[:limit]]
+        return [
+            QueuedChat.from_chat(c, last_real_ms=c.last_activity_ms)
+            for c in kept[:limit]
+        ]
 
     candidates = visible[:verify_cap]
-    verdicts: dict[str, Optional[bool]] = {}
+    verdicts: dict[str, tuple[Optional[bool], int]] = {}
     # This per-chat fan-out (one list_messages each) gates first paint, so run it
     # wide — the Beeper bridge is local and handles the concurrency fine. Fewer
     # waves = a noticeably faster queue load when many chats are visible.
@@ -154,20 +220,24 @@ def build_queue(
     if candidates:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(_owes_reply, client, c.chat_id): c.chat_id
+                pool.submit(_scan_recent, client, c.chat_id): c.chat_id
                 for c in candidates
             }
             for fut in as_completed(futures):
                 verdicts[futures[fut]] = fut.result()
 
-    kept = []
+    kept: list[tuple[BeeperChat, int]] = []
     for c in candidates:
-        owed = verdicts.get(c.chat_id)
+        owed, last_real_ms = verdicts.get(c.chat_id, (None, 0))
         if owed is None:  # verification errored — fall back to the preview
             owed = _needs_reply(c)
+            last_real_ms = c.last_activity_ms
         if owed:
-            kept.append(c)
-    return [QueuedChat.from_chat(c) for c in kept[:limit]]
+            kept.append((c, last_real_ms))
+    return [
+        QueuedChat.from_chat(c, last_real_ms=last_real_ms)
+        for c, last_real_ms in kept[:limit]
+    ]
 
 
 # ------------------------------- chat view --------------------------------
@@ -630,6 +700,40 @@ def extract_event(
         all_day=bool(data.get("all_day", False)),
         location=str(data.get("location", "")).strip(),
         details=str(data.get("details", "")).strip(),
+    )
+
+
+# -------------------------------- to-dos ----------------------------------
+
+@dataclass
+class Todo:
+    """A to-do item pulled from a conversation: a task-manager title + content."""
+
+    title: str = ""
+    body: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def extract_todo(
+    orc: OpenRouterClient, model: str, transcript: str, *, today: str = ""
+) -> Todo:
+    """One OpenRouter call -> a {title, body} to-do (empty title if nothing).
+
+    ``body`` carries the quoted lines the task needs to make sense, so a task
+    manager gets a usable description instead of a bare provenance line."""
+    if not transcript.strip():
+        return Todo()
+    raw = orc.create_chat_completion(model, build_task_prompt(transcript, today=today))
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        # Model wrote prose instead of JSON — first line is the task, rest the body.
+        head, _, rest = raw.strip().partition("\n")
+        return Todo(title=head.strip(), body=rest.strip())
+    return Todo(
+        title=str(data.get("title", "")).strip(),
+        body=str(data.get("body", "")).strip(),
     )
 
 

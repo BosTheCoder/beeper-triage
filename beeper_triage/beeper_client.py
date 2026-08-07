@@ -6,6 +6,7 @@ import datetime
 import json
 import mimetypes
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -16,12 +17,25 @@ class BeeperSDKError(RuntimeError):
 
 
 _ATTACHMENT_TYPE_BY_PREFIX = {"image": "image", "video": "video", "audio": "audio"}
+# Exact MIME types the SDK has a more specific `type` for than their prefix.
+# A GIF sent as a plain "image" gets retracted by the WhatsApp bridge.
+_ATTACHMENT_TYPE_BY_MIME = {"image/gif": "gif"}
+
+# label id -> chats, cached in-process. Labels change rarely and list_labels sits
+# on the queue-build path, so a short TTL keeps the filter free.
+_LABELS_CACHE: dict[str, tuple[float, list["BeeperLabel"]]] = {}
 
 
 def _attachment_type_for_mime(mime_type: Optional[str]) -> str:
-    """Map a MIME type to the SDK attachment `type` enum; default to 'file'."""
+    """Map a MIME type to the SDK attachment `type` enum; default to 'file'.
+
+    Exact-MIME overrides win over the prefix map, so `image/gif` sends as the
+    SDK's distinct "gif" type rather than "image"."""
     if mime_type:
-        prefix = mime_type.split("/", 1)[0]
+        mime = mime_type.split(";", 1)[0].strip().lower()
+        if mime in _ATTACHMENT_TYPE_BY_MIME:
+            return _ATTACHMENT_TYPE_BY_MIME[mime]
+        prefix = mime.split("/", 1)[0]
         return _ATTACHMENT_TYPE_BY_PREFIX.get(prefix, "file")
     return "file"
 
@@ -39,6 +53,7 @@ class BeeperMessage:
     attachment: Optional[dict] = None  # {kind, is_voice_note, duration, mime, src_url, file_name}
     reactions: list = field(default_factory=list)  # emoji reaction keys on this message
     is_deleted: bool = False  # message was deleted/unsent (a tombstone), when the network surfaces it
+    is_hidden: bool = False  # Beeper marks bookkeeping events hidden — never a real message
 
 
 @dataclass
@@ -60,6 +75,15 @@ class BeeperChat:
     is_pinned: bool = False  # True when pinned — Beeper CANNOT archive a pinned chat
 
 
+@dataclass
+class BeeperLabel:
+    """A Beeper label (the folders in the sidebar) and the chats filed under it."""
+
+    label_id: str
+    title: str
+    chat_ids: set[str] = field(default_factory=set)
+
+
 class BeeperClient:
     """Thin wrapper around the official beeper_desktop_api SDK."""
 
@@ -68,6 +92,8 @@ class BeeperClient:
     CACHE_TTL_MS = 6 * 60 * 60 * 1000  # 6 hours in milliseconds
     ACCOUNTS_CACHE_FILE = os.path.join(CACHE_DIR, "accounts.json")
     ACCOUNTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000  # 24 hours — accounts rarely change
+    LABELS_ACCOUNT_DATA_TYPE = "com.beeper.labels"
+    LABELS_CACHE_TTL_S = 60.0  # in-process only; see _LABELS_CACHE
     _RAW_METHODS = {"get", "post", "put", "patch", "delete"}
 
     def __init__(self, access_token: str, base_url: Optional[str] = None) -> None:
@@ -85,6 +111,7 @@ class BeeperClient:
             self._client = SDKClient(**kwargs)
         except Exception as exc:
             raise BeeperSDKError("Failed to initialize Beeper SDK client.") from exc
+        self._matrix_uid: Optional[str] = None
 
     def _get_cache(self) -> Optional[list[BeeperChat]]:
         """Load chats from cache if valid and not expired."""
@@ -349,6 +376,93 @@ class BeeperClient:
                 f"Failed to list accounts via SDK: {type(exc).__name__}: {str(exc)}"
             ) from exc
 
+    def matrix_user_id(self) -> Optional[str]:
+        """This user's Matrix ID (e.g. '@someone:beeper.com'), or None.
+
+        Labels live in Matrix account data, which is keyed by Matrix user ID —
+        so it must not be hardcoded. ``list_accounts`` folds accounts down to
+        (network, label) and drops it, so read the accounts list directly: the
+        Beeper/Matrix account (``accountID == "matrix"``, ``bridge.type ==
+        "matrix"``) carries it on ``user.id`` (and the same value on
+        ``loginID``). Any other account whose user id has the '@user:server'
+        shape is the fallback. Memoised — it never changes for a session.
+        """
+        cached = getattr(self, "_matrix_uid", None)
+        if cached:
+            return cached
+        try:
+            accounts = self._client.accounts.list()
+        except Exception as exc:
+            raise BeeperSDKError(
+                f"Failed to list accounts via SDK: {type(exc).__name__}: {str(exc)}"
+            ) from exc
+        fallback: Optional[str] = None
+        for account in accounts:
+            user = self._get_attr(account, "user", default=None)
+            uid = self._get_attr(user, "id", default=None) if user is not None else None
+            uid = str(uid or self._get_attr(account, "login_id", "loginID", default="") or "")
+            if not (uid.startswith("@") and ":" in uid):
+                continue
+            bridge = self._get_attr(account, "bridge", default=None)
+            bridge_type = self._get_attr(bridge, "type", default=None) if bridge is not None else None
+            account_id = self._get_attr(account, "account_id", "accountID", default=None)
+            if bridge_type == "matrix" or account_id == "matrix":
+                self._matrix_uid = uid
+                return uid
+            if fallback is None:
+                fallback = uid
+        self._matrix_uid = fallback
+        return fallback
+
+    def list_labels(self, use_cache: bool = True) -> list[BeeperLabel]:
+        """The user's labels and the chats filed under each.
+
+        Labels are not in the /v1 API at all — they live in Matrix user account
+        data under ``com.beeper.labels``, shaped
+        ``{"<uuid>": {"createdAt": …, "title": …, "rooms": ["!id:server", …]}}``.
+        The room ids ARE our chat_ids.
+
+        A user who has never made a label has no such event, and Beeper answers
+        HTTP 500 "No account data event found" — that is "no labels", not an
+        error, so it returns []."""
+        user_id = self.matrix_user_id()
+        if not user_id:
+            return []
+        now = time.monotonic()
+        if use_cache:
+            cached = _LABELS_CACHE.get(user_id)
+            if cached is not None and (now - cached[0]) < self.LABELS_CACHE_TTL_S:
+                return list(cached[1])
+
+        path = (
+            f"/_matrix/client/v3/user/{user_id}"
+            f"/account_data/{self.LABELS_ACCOUNT_DATA_TYPE}"
+        )
+        try:
+            payload = self.raw_request("get", path)
+        except BeeperSDKError as exc:
+            if "No account data event found" not in str(exc):
+                raise
+            payload = {}
+
+        labels: list[BeeperLabel] = []
+        if isinstance(payload, dict):
+            for label_id, entry in payload.items():
+                if not isinstance(entry, dict):
+                    continue  # malformed entry — skip rather than fail the filter
+                rooms = entry.get("rooms")
+                labels.append(
+                    BeeperLabel(
+                        label_id=str(label_id),
+                        title=str(entry.get("title") or "").strip() or str(label_id),
+                        chat_ids=(
+                            {str(r) for r in rooms if r} if isinstance(rooms, list) else set()
+                        ),
+                    )
+                )
+        _LABELS_CACHE[user_id] = (now, labels)
+        return list(labels)
+
     def get_chat(self, chat_id: str) -> Any:
         try:
             return self._client.chats.retrieve(chat_id)
@@ -414,6 +528,9 @@ class BeeperClient:
                         reactions=self._extract_reactions(msg),
                         is_deleted=bool(
                             self._get_attr(msg, "is_deleted", "isDeleted", default=False)
+                        ),
+                        is_hidden=bool(
+                            self._get_attr(msg, "is_hidden", "isHidden", default=False)
                         ),
                     )
                 )
