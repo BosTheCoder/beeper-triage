@@ -8,12 +8,14 @@ whole flow is unit-testable with fakes.
 from __future__ import annotations
 
 import html
-import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Callable, Iterable, Optional
+
+from draftkit import Draft, parse_drafts
+from draftkit.parsing import extract_json_object as _extract_json_object
 
 from .beeper_client import BeeperChat, BeeperClient, BeeperMessage
 from .openrouter_client import OpenRouterClient
@@ -523,15 +525,6 @@ def format_transcript(messages: Iterable[BeeperMessage]) -> str:
 
 # ------------------------------- drafting ---------------------------------
 
-@dataclass
-class Draft:
-    type: str
-    text: str
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
 def draft_options(
     orc: OpenRouterClient,
     model: str,
@@ -545,10 +538,10 @@ def draft_options(
 ) -> list[Draft]:
     """One OpenRouter call -> up to `count` type-tagged drafts.
 
-    ``style`` is an optional texting-style profile injected so drafts match the
-    user's voice. ``reply_delay`` (human string, e.g. "2 months") makes one draft
-    acknowledge a long silence when the user is replying very late. ``lessons`` is
-    the user's approved do/don't corrections (#8), injected as hard rules."""
+    Signature unchanged; the prompt structure and parsing now live in draftkit.
+    The texting framing, REPLY_TYPES, and the reply-delay/hint/lessons steers
+    stay here because they are this package's domain, not the primitive's.
+    """
     if not transcript.strip():
         return []
     messages = build_options_prompt(
@@ -556,7 +549,7 @@ def draft_options(
         reply_delay=reply_delay, lessons=lessons,
     )
     raw = orc.create_chat_completion(model, messages)
-    return _parse_drafts(raw, count=count)
+    return parse_drafts(raw, count=count, valid_types=REPLY_TYPES, fallback="going")
 
 
 def opener_options(
@@ -576,90 +569,7 @@ def opener_options(
         name, context, count=count, style=style, history=history, reply_delay=reply_delay
     )
     raw = orc.create_chat_completion(model, messages)
-    return _parse_drafts(raw, count=count, valid_types=OPENER_TYPES, fallback="opener")
-
-
-_OBJ_RE = re.compile(r"\{[^{}]*\}")
-
-
-def _parse_drafts(
-    raw: str, *, count: int, valid_types: dict = REPLY_TYPES, fallback: str = "going"
-) -> list[Draft]:
-    """Robustly pull a JSON array of {type,text} out of the model output.
-
-    Tolerates a ```json fence and raw newlines inside string values (the model
-    often emits multi-line reply text, which strict JSON rejects). Falls back to
-    plucking individual {type,text} objects, then — only if the output is clearly
-    NOT JSON — to treating the whole thing as one draft. Never surfaces raw JSON.
-    ``valid_types``/``fallback`` swap the type vocabulary for openers vs replies."""
-    payload = _extract_json_array(raw)
-    items = payload if isinstance(payload, list) else _salvage_objects(raw)
-
-    drafts: list[Draft] = []
-    seen: set[str] = set()
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        text = str(item.get("text", "")).strip()
-        if not text:
-            continue
-        t = str(item.get("type", "")).strip().lower()
-        if t not in valid_types:
-            t = fallback
-        key = text.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        drafts.append(Draft(type=t, text=text))
-
-    if not drafts and raw.strip() and not _looks_like_json(raw):
-        # Model wrote plain prose instead of JSON — use it as a single draft.
-        drafts.append(Draft(type=fallback, text=raw.strip()))
-    return drafts[:count]
-
-
-def _looks_like_json(raw: str) -> bool:
-    s = raw.strip().lstrip("`").lstrip("json").strip()
-    return s.startswith("[") or s.startswith("{")
-
-
-def _salvage_objects(raw: str) -> list:
-    """Pluck individual {type,text} objects when the whole-array parse fails
-    (trailing comma, stray text, etc.). Each is parsed leniently."""
-    out = []
-    for chunk in _OBJ_RE.findall(raw):
-        try:
-            obj = json.loads(chunk, strict=False)
-        except (json.JSONDecodeError, ValueError):
-            continue
-        if isinstance(obj, dict):
-            out.append(obj)
-    return out
-
-
-def _extract_json_array(raw: str):
-    cleaned = raw.strip()
-    cleaned = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-    start, end = cleaned.find("["), cleaned.rfind("]")
-    if start != -1 and end != -1 and end > start:
-        cleaned = cleaned[start : end + 1]
-    try:
-        # strict=False: allow raw newlines/tabs inside strings (multi-line replies)
-        return json.loads(cleaned, strict=False)
-    except (json.JSONDecodeError, ValueError):
-        return None
-
-
-def _extract_json_object(raw: str):
-    cleaned = raw.strip()
-    cleaned = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.MULTILINE).strip()
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        cleaned = cleaned[start : end + 1]
-    try:
-        return json.loads(cleaned, strict=False)
-    except (json.JSONDecodeError, ValueError):
-        return None
+    return parse_drafts(raw, count=count, valid_types=OPENER_TYPES, fallback="opener")
 
 
 # ------------------------------- events -----------------------------------

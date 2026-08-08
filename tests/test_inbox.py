@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from draftkit import parse_drafts
+
 from beeper_triage.beeper_client import BeeperChat, BeeperLabel, BeeperMessage
 from beeper_triage import inbox
 from beeper_triage.openrouter_client import OpenRouterMessage
-from beeper_triage.prompts import build_options_prompt
+from beeper_triage.prompts import REPLY_TYPES, build_options_prompt
 
 
 def test_openrouter_message_cache_payload():
@@ -418,7 +420,7 @@ def test_parse_drafts_tolerates_raw_newlines_in_text():
     # JSON string, which strict json.loads rejects -> used to dump raw JSON as a
     # single draft. Must now parse into real drafts.
     reply = '```json\n[{"type":"going","text":"say less coming now\n\nalso saw the invite, im down"},{"type":"close","text":"bet, catch you later"}]\n```'
-    drafts = inbox._parse_drafts(reply, count=5)
+    drafts = parse_drafts(reply, count=5, valid_types=REPLY_TYPES, fallback="going")
     assert len(drafts) == 2
     assert drafts[0].type == "going" and "\n\n" in drafts[0].text
     assert "```" not in drafts[0].text  # never leaks the fence
@@ -427,7 +429,7 @@ def test_parse_drafts_tolerates_raw_newlines_in_text():
 def test_parse_drafts_never_surfaces_raw_json():
     # If parsing truly fails, we must not show the user raw JSON as a "draft".
     broken = '```json [{"type":"going" "text": BROKEN'
-    drafts = inbox._parse_drafts(broken, count=5)
+    drafts = parse_drafts(broken, count=5, valid_types=REPLY_TYPES, fallback="going")
     assert all("```json" not in d.text and not d.text.startswith("[") for d in drafts)
 
 

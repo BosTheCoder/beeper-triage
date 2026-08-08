@@ -7,16 +7,20 @@ name = "beeper-triage"
 version = "0.1.0"
 description = "Minimal CLI to triage Beeper chats and draft replies with OpenRouter"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 
 dependencies = [
   "beeper_desktop_api==5.0.0",
+  "draftkit @ git+https://github.com/BosTheCoder/draftkit",
   "python-dotenv",
   "requests",
   "typer",
   "websockets>=13",   # push transport for `watch` (watch_ws.py)
 ]
+
+[dependency-groups]
+dev = ["pytest"]
 
 [project.scripts]
 beeper = "beeper_triage.cli:app"
