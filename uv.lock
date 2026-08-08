@@ -36,7 +36,7 @@ wheels = [
 
 [[package]]
 name = "beeper-desktop-api"
-version = "4.3.0"
+version = "5.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -46,9 +46,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/39/31/04c74e3a3c33baa20e3293abf97bd817b75e2e32d9e3d6f5a714e983eb1e/beeper_desktop_api-4.3.0.tar.gz", hash = "sha256:6f4e8503a703dab79a9fa51957e0b0950058558b51b4f26cb4a324c464a892b1", size = 130427, upload-time = "2026-02-20T15:01:31.718Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ae/40/fab50bb899dc0d369dea9a6656a017d3242d3313bc211be435c898ba4443/beeper_desktop_api-5.0.0.tar.gz", hash = "sha256:50f8ed2c847425e3ff878fba8cae020d430ec0283145d48896546571d603e22f", size = 146091, upload-time = "2026-05-06T21:24:11.642Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/ab/b4607ef839a1d5f44a3e0b40c6f22eeb85f54586410b54d9471cb2321081/beeper_desktop_api-4.3.0-py3-none-any.whl", hash = "sha256:944d86b4fa0548d89e8b0d78e49ab6812ce29511cfcb2b030687b3de8be6a1fc", size = 124158, upload-time = "2026-02-20T15:01:30.451Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/fb/8cbf3fc92a838fedc21d4e4ed70e499832512cb70610f0ddb92242964cc4/beeper_desktop_api-5.0.0-py3-none-any.whl", hash = "sha256:0cfb76ef35e1c0e8fa8972ab4bbf9fa1d0f57cb9998c70e78d5d5a884e7bccc8", size = 137960, upload-time = "2026-05-06T21:24:10.279Z" },
 ]
 
 [[package]]
@@ -64,7 +64,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "beeper-desktop-api" },
+    { name = "beeper-desktop-api", specifier = "==5.0.0" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "typer" },
