@@ -118,6 +118,83 @@ When replying, you can choose a guidance preset or type custom guidance:
 | `todo` | Acknowledge + generate a todo item |
 | `analyse` | Analyse best next steps (no reply sent) |
 
+## Watching chats
+
+`beeper watch` polls a named set of chats and prints **one line per event** on
+stdout — the shape the Claude Code Monitor tool, `grep`, `tee`, `notify-send` or
+a webhook all consume with no adapter. It observes only; it never sends.
+
+```bash
+beeper watch --config npm-13-edward        # foreground, one line per event
+beeper watch --config ./my-watch.toml --once   # single poll (cron, tests)
+beeper watch --config npm-13-edward --dry-run  # seed state, emit nothing
+beeper watch --config npm-13-edward --json     # one JSON object per line
+
+beeper watch list  --config npm-13-edward  # watches → resolved chats, last activity
+beeper watch check npm-13-edward           # same, but exits 1 if a pattern matches nothing
+```
+
+`--config` takes a path, or a bare name resolved from `~/.config/beeper-watches/<name>.toml`.
+
+Output:
+
+```
+REPLY: ELEC AK Electrical (NAPIT) | Your welcome. Please if you don't mind can you take a minute...
+STILL UNANSWERED (34m, final reminder): GAS Kamdem HomeTech
+```
+
+Diagnostics and failed polls go to **stderr**, never stdout. A poll that raises
+is logged and skipped — the loop and the state file both survive it.
+
+### Config
+
+One TOML file per watch:
+
+```toml
+name          = "npm-13-edward"
+poll_seconds  = 180
+state         = "~/.local/state/beeper-watch/npm-13-edward.json"
+
+[nag]
+after_seconds = 1800   # re-raise a still-open chat after this long
+count         = 1      # 0 disables re-raises entirely
+
+[filters]
+inbound_only  = true   # false also reports your own messages, as ACTIVITY
+
+[[watch]]
+chat  = "!2VeiAV7APqb0sTtSY226:beeper.local"
+label = "ELEC AK Electrical (NAPIT)"
+
+[[watch]]
+title_match = "(?i)damp detectives"     # regex on the chat title
+label       = "DAMP Damp Detectives"
+priority    = "high"                    # advisory; shows as [high] in the line
+
+[[watch]]
+title_match = "(?i)cadent|national grid"
+label       = "GAS network"
+text_match  = "(?i)\\b(appointment|engineer|book(ed|ing)?)\\b"
+```
+
+`text_match` is optional and **per-watch, never global** — the chat allowlist
+does the real work, and a keyword sweep over a whole account is the part most
+likely to generate false positives. An unknown key in a `[[watch]]` block is a
+hard error, because a typo'd key would otherwise silently disable the watch.
+
+### Two things worth knowing before changing it
+
+**Seed before arming.** Without `--dry-run` first, the initial poll fires an
+event for every watched chat whose last message merely happens to be inbound.
+
+**The re-raise is capped, and the cap is the point.** A chat stays "open" while
+their message was the last one, which is *not* the same as "you owe a reply" —
+it may have been answered by phone, by email, or in person, and this tool cannot
+see any of that. The re-raise has exactly one job: covering a lost first
+notification. An uncapped one is a permanent alarm on a resolved item, and it
+trains you to ignore the channel. See §5.3 of
+`docs/superpowers/specs/2026-08-07-beeper-watch-design.md`.
+
 ## Agent Mode
 
 For non-interactive / programmatic use:

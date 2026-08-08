@@ -68,6 +68,7 @@ Both commands support `--agent` mode for non-interactive JSON I/O.
 - **openrouter_client.py**: REST client for OpenRouter API via `requests`.
 - **prompts.py**: Builds LLM prompts. Three prompt builders: `build_prompt()` (reply), `build_todo_prompt()` (acknowledge + todo), `build_analyse_prompt()` (next steps analysis).
 - **editor.py**: Opens `$EDITOR` with a temp file for draft review.
+- **watch.py**: The `beeper watch` verb — TOML config loader, the poll state machine (`scan` / `nag_pass`), atomic state file, and the Typer wiring. The engine half is pure (chats in, events out) so the state machine is testable without a network. Spec: `docs/superpowers/specs/2026-08-07-beeper-watch-design.md`.
 - **wsl_proxy.py**: TCP proxy (runs on Windows) bridging WSL IPv4 → Beeper's IPv6 loopback. Entry point: `beeper-proxy`.
 
 ### Key Design Decisions
@@ -77,6 +78,7 @@ Both commands support `--agent` mode for non-interactive JSON I/O.
 - **SMS splitting**: Messages to UK landlines (02x/03x/08x) are split at 160 chars to avoid silent MMS drops. Mobile numbers (07x) are sent as-is.
 - **Chat cache**: `list_chats()` caches results with a 6-hour TTL. Use `--refresh-chats` to bypass.
 - **Reply guidance**: Seven preset guidance modes affect LLM prompt construction. "analyse" and "todo" use entirely different system prompts.
+- **`watch` polls uncached, and its re-raise is capped**: `list_chats` defaults to the 6-hour cache, so a watcher that forgets `use_cache=False` goes silently dead — silence is indistinguishable from "nothing happened", so this fails invisibly. And a chat whose last message is inbound has *not* necessarily gone unanswered (phone, email, in person), so the re-raise is capped at `nag.count`. Both are asserted in `tests/test_watch.py`; read spec §3.4 and §5.3 before loosening either.
 
 ### Reply Guidance Modes
 

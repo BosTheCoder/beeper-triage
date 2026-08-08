@@ -22,7 +22,7 @@ from .editor import EditorError, edit_text
 from .openrouter_client import OpenRouterClient, OpenRouterError
 from .prompts import build_analyse_prompt, build_prompt, build_todo_prompt
 from .runtime import _build_client, _require_env
-from . import verbs
+from . import verbs, watch
 
 app = typer.Typer(add_completion=False)
 
@@ -1245,6 +1245,7 @@ def picker(
 
 
 verbs.register(app)
+watch.register(app)
 
 
 if __name__ == "__main__":

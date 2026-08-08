@@ -73,6 +73,7 @@ class BeeperChat:
     network: Optional[str] = None  # Raw network from the chat (e.g. "whatsapp")
     is_archived: bool = False  # True when the chat is archived (out of inbox)
     is_pinned: bool = False  # True when pinned — Beeper CANNOT archive a pinned chat
+    preview_text: Optional[str] = None  # Body of the last message, for content matching
 
 
 @dataclass
@@ -150,6 +151,7 @@ class BeeperClient:
                         "is_group": chat.is_group,
                         "network": chat.network,
                         "is_archived": chat.is_archived,
+                        "preview_text": chat.preview_text,
                     }
                     for chat in chats
                 ],
@@ -214,10 +216,13 @@ class BeeperClient:
         for chat in chats:
             preview = self._get_attr(chat, "preview", default=None)
             preview_is_sender = False
+            preview_text: Optional[str] = None
             if preview is not None:
                 preview_is_sender = bool(
                     self._get_attr(preview, "is_sender", default=False)
                 )
+                raw_preview_text = self._get_attr(preview, "text", default=None)
+                preview_text = str(raw_preview_text) if raw_preview_text is not None else None
             account_id = self._get_attr(chat, "accountID", "account_id", default=None)
             if account_id:
                 account_id = str(account_id)
@@ -282,6 +287,7 @@ class BeeperClient:
                     is_pinned=bool(
                         self._get_attr(chat, "is_pinned", "isPinned", default=False)
                     ),
+                    preview_text=preview_text,
                 )
             )
 
