@@ -1,8 +1,9 @@
 # `beeper watch` — design spec
 
 **Opened:** 2026-08-07
-**Status:** Phase 1 shipped 2026-08-07 (`beeper_triage/watch.py`, `tests/test_watch.py`).
-Phases 2–3 not started.
+**Status:** Phase 1 shipped 2026-08-07 (`beeper_triage/watch.py`, `watch_cli.py`,
+`tests/test_watch.py`). Phase 2 shipped 2026-08-08 (`beeper-inbox/app/watches.py`).
+Phase 3 not started.
 **Repo:** `~/projects/personal/beeper-triage` (engine + CLI). Phase 2 touches `~/projects/personal/beeper-inbox`.
 
 ---
@@ -325,3 +326,40 @@ Deviations from the spec above, all additive:
 Verified live on 2026-08-07 against the WhatsApp self-chat: `check` → `--dry-run` seed →
 send → `--once` emitted one line → `--once` again silent; `text_match` matched and then
 correctly did not.
+
+## 12. Phase 2 as built
+
+Lands in `beeper-inbox` as `app/watches.py` + three endpoints. §8's sketch held; the
+notable calls:
+
+- **The engine was split first.** `watch.py` is now the pure state machine (stdlib plus
+  `beeper_client`) and `watch_cli.py` holds the Typer wiring, because the container has no
+  typer in its requirements. `sync-engine.sh` vendors `watch.py`, so the CLI and the
+  container run the *same* state machine rather than two copies of it.
+- **`parse_config(mapping)` was split out of `load_config(path)`**, so a watch POSTed as
+  JSON is validated by identical rules with identical messages. Only the decoding differs.
+- **One chat fetch per tick serves every watch.** Given §10.1 (the whole account in ~2s,
+  returning everything), N watches cost one API call. The consequence: `poll_seconds`
+  becomes a floor across the set, not a per-watch schedule — a watch is evaluated at least
+  as often as it asked, sometimes sooner. Never later, so nothing is lost.
+- **Seed before arm, enforced by the store.** A registered watch is stored `seeded: false`;
+  the poller's first tick runs `scan(seed=True)` and emits nothing. This is §7's `--dry-run`
+  lesson made non-optional, because over an API there is no human to remember it. Replacing
+  a watch re-seeds it.
+- **Registration needs no live Beeper.** Seeding happens on the tick, not in the request,
+  so a `POST` does not fail because the proxy is momentarily down.
+- **Everything degrades to a logged line** in `events.jsonl` — dead Beeper, hand-broken
+  `watches.json`, one watch raising mid-tick — and retries next tick.
+- **Two payload fields are renamed on the way into the log.** `events.log(event, **fields)`
+  builds `{"ts": now, "event": event, **fields}`, so the engine's own `event` and `ts`
+  overwrote both, and watch records lost the wall-clock time they were logged at. They land
+  as `kind` and `activity_ms`. Found by the live smoke test, not the unit tests.
+
+Endpoints: `POST /api/watches` (`{name, config}`), `GET /api/watches` (`?resolve=1` adds
+what each currently matches, `?events=N` the recent fired events), `DELETE
+/api/watches/{name}`. **No UI** — the consumers are the CLI and agents, so the read surface
+is JSON only.
+
+Verified live on 2026-08-08 against the WhatsApp self-chat: register → poller seeded and
+armed with nothing emitted → send → the event appeared on `GET /api/watches` within one
+tick → delete removed the watch and its state file.
