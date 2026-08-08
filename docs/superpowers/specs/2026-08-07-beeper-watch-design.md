@@ -285,11 +285,37 @@ following the repo's existing send-safety convention.
    the final page reports `hasMore: false`, so the walk is genuinely exhaustive (§3.1
    confirmed). A 180s poll costs ~1% of a core; even 30s would be comfortable. The
    `chats.search` fallback (§3.2) is not needed.
-2. **Is there a push/subscribe transport?** The SDK ships `_streaming.py`, but no
-   subscribe surface was found on the chats resource. If Beeper Desktop exposes a socket,
-   the whole poll loop collapses into a listener and §5.2 gets much simpler. Still open —
-   given Q1's answer, polling is cheap enough that this is now an elegance question, not a
-   cost one.
+2. **~~Is there a push/subscribe transport?~~ Answered 2026-08-08 — yes, and it carries
+   full message content.** The earlier "no subscribe surface" conclusion was wrong: it was
+   looked for on the *chats resource*, and it is not there. It is a WebSocket, advertised
+   by `GET /v1/info` as `endpoints.ws_events` → `http://127.0.0.1:23373/v1/ws`.
+
+   Verified live on Beeper 4.3.20, **through the WSL proxy** (a raw TCP proxy, so the
+   Upgrade passes straight through — `HTTP/1.1 101 Switching Protocols`). Auth is the same
+   `Authorization: Bearer` token. Subscribe with a single command:
+
+   ```json
+   {"type": "subscriptions.set", "requestID": "r1", "chatIDs": ["*"]}
+   ```
+
+   Events: `chat.upserted`, `chat.deleted`, `message.upserted`, `message.deleted`.
+   Crucially `message.upserted` is **not** a bare invalidation — it carries an `entries`
+   array with the whole message: `chatID`, `text`, `isSender`, `senderID`, `senderName`,
+   `timestamp`, `type`, `isDeleted`. Everything §5.2 needs, plus the sender fields Q4 wants.
+   Latency was milliseconds, against ~90s average on a 180s poll.
+
+   **Three things a port has to handle, none of them dealbreakers:**
+   - *It is documented as experimental* (`/desktop-api/websocket-experimental/`). It can
+     change under us; the poll path is the fallback that makes that survivable.
+   - *The same message fires several times* — observed 3 `message.upserted` for one send as
+     `sendStatus` went PENDING → sent → seen. The current state machine dedupes on chat
+     `lastActivity`; a message feed must dedupe on message id instead.
+   - *No chat title in the payload.* `title_match` needs one, so a listener needs a cached
+     chat list to resolve `chatID` → title. `chat.upserted` gives only the id.
+
+   **So the poll does not disappear — it changes job**, from primary transport to the
+   reconcile pass that covers a dropped socket and a stale title cache. There is a `seq`
+   field on every event, which looks like it exists for exactly that gap detection.
 3. **Marking handled without replying** (§5.3). Does `mark-read` clear `open`, or does
    `watch` need its own ack? Deferrable — the nag cap removes the urgency.
 4. **Group chats.** Should a `[[watch]]` be able to filter on *sender* within a group, not
