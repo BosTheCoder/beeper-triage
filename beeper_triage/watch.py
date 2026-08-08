@@ -31,7 +31,8 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -241,10 +242,16 @@ def match_watch(chat: BeeperChat, watches: Iterable[WatchSpec]) -> Optional[Watc
 
 @dataclass
 class ChatState:
-    """Per-chat memory between polls. See spec §5.1.
+    """Per-chat memory between observations. See spec §5.1.
 
     ``label``/``priority`` are cached here so the re-raise pass can render a line
     for a chat that did not appear in this poll's list at all.
+
+    ``last_msg_id`` exists only for the push transport. The socket re-delivers
+    the same message as its send status advances (PENDING → sent → seen), and
+    those repeats carry an identical timestamp, so the ``ts`` guard alone would
+    mostly cover it — but two different messages *can* share a millisecond in a
+    busy group, and there the id is the only thing that tells them apart.
     """
 
     last: int = 0          # lastActivity ms of the newest message seen
@@ -253,6 +260,7 @@ class ChatState:
     nags: int = 0          # re-raises already spent
     label: str = ""
     priority: Optional[str] = None
+    last_msg_id: str = ""  # push transport only; see above
 
 
 def load_state(path: "str | Path") -> dict[str, ChatState]:
@@ -274,21 +282,16 @@ def load_state(path: "str | Path") -> dict[str, ChatState]:
 
 
 def save_state(path: "str | Path", state: dict[str, ChatState]) -> None:
-    """Write the state file atomically (temp + os.replace)."""
+    """Write the state file atomically (temp + os.replace).
+
+    Rows come from ``asdict`` rather than a hand-written field list, so a field
+    added to ChatState cannot be silently dropped on save — the exact bug that
+    was live in BeeperClient._save_cache.
+    """
     target = Path(path).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    payload = {
-        chat_id: {
-            "last": st.last,
-            "emitted": st.emitted,
-            "open": st.open,
-            "nags": st.nags,
-            "label": st.label,
-            "priority": st.priority,
-        }
-        for chat_id, st in state.items()
-    }
+    payload = {chat_id: asdict(st) for chat_id, st in state.items()}
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
     os.replace(tmp, target)
@@ -333,6 +336,59 @@ class Event:
         return {**base, "text": self.text, "ts": self.ts}
 
 
+@dataclass
+class WatchMessage:
+    """One message off the push transport, normalised.
+
+    Deliberately a plain record rather than the SDK's Message: the socket is
+    documented experimental, so the shape it hands us is the thing most likely
+    to change, and keeping the parse in one place (`from_ws_entry`) means a
+    change there does not reach the state machine.
+    """
+
+    chat_id: str
+    message_id: str
+    ts: int                       # epoch ms
+    is_sender: bool
+    text: Optional[str] = None
+    sender_id: str = ""
+    sender_name: str = ""
+
+    @classmethod
+    def from_ws_entry(cls, entry: Mapping[str, Any], chat_id: str = "") -> "WatchMessage":
+        """Parse one element of a `message.upserted` frame's `entries` array."""
+        return cls(
+            chat_id=str(entry.get("chatID") or chat_id),
+            message_id=str(entry.get("id") or ""),
+            ts=parse_ts(entry.get("timestamp")),
+            is_sender=bool(entry.get("isSender")),
+            text=entry.get("text"),
+            sender_id=str(entry.get("senderID") or ""),
+            sender_name=str(entry.get("senderName") or ""),
+        )
+
+
+@dataclass
+class _TitledChat:
+    """The two fields `match_watch` reads, for a chat we only know by id."""
+
+    chat_id: str
+    title: str
+
+
+def parse_ts(value: Any) -> int:
+    """Epoch ms from the socket's ISO-8601 timestamp (or a number, or nothing)."""
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str) and value:
+        try:
+            text = value.replace("Z", "+00:00")
+            return int(datetime.fromisoformat(text).timestamp() * 1000)
+        except ValueError:
+            return 0
+    return 0
+
+
 def collapse(text: Optional[str], limit: int = PREVIEW_CHARS) -> str:
     """One line, whitespace-normalised, truncated to `limit` chars."""
     flat = " ".join((text or "").split())
@@ -344,6 +400,78 @@ def collapse(text: Optional[str], limit: int = PREVIEW_CHARS) -> str:
 # ---------------------------------------------------------------------------
 # the state machine (spec §5.2)
 # ---------------------------------------------------------------------------
+
+
+def observe(
+    spec: WatchSpec,
+    chat_id: str,
+    *,
+    ts: int,
+    is_sender: bool,
+    text: Optional[str],
+    config: WatchConfig,
+    state: dict[str, ChatState],
+    now: float,
+    seed: bool = False,
+    msg_id: str = "",
+    warn: Callable[[str], None] = lambda _m: None,
+) -> Optional[Event]:
+    """The state machine for one observation of one watched chat (spec §5.2).
+
+    Both transports funnel through here — the poll extracts (ts, is_sender,
+    text) from a chat's preview, the socket reads them off the message itself —
+    so there is exactly one copy of the decision, and the rules cannot drift
+    apart between them.
+
+    `msg_id` is supplied only by the push transport, which re-delivers the same
+    message as its send status advances. When present, an exact repeat is
+    dropped and a same-millisecond *different* message is still let through;
+    without it the poll keeps its original, proven `ts <= last` behaviour.
+    """
+    st = state.setdefault(chat_id, ChatState())
+    st.label, st.priority = spec.label, spec.priority
+
+    if msg_id:
+        if msg_id == st.last_msg_id or ts < st.last:
+            return None
+        st.last_msg_id = msg_id
+    elif ts <= st.last:
+        return None
+    st.last = max(st.last, ts)
+
+    if seed:
+        st.open, st.nags, st.emitted = False, 0, 0.0
+        return None
+
+    if is_sender and config.inbound_only:
+        st.open, st.nags = False, 0
+        return None
+
+    if spec.text_match is not None:
+        if text is None:
+            warn(
+                f"{spec.label}: text_match is set but there is no message text "
+                f"for {chat_id} — treating as no match."
+            )
+        if not spec.text_match.search(text or ""):
+            st.open, st.nags = False, 0
+            return None
+
+    if is_sender:
+        # Our own message is worth reporting when inbound_only is off, but it
+        # never means someone is waiting on us.
+        st.open, st.nags = False, 0
+    else:
+        st.open, st.nags, st.emitted = True, 0, now
+
+    return Event(
+        kind="activity" if is_sender else "reply",
+        chat_id=chat_id,
+        label=spec.label,
+        text=collapse(text),
+        ts=ts,
+        priority=spec.priority,
+    )
 
 
 def scan(
@@ -366,50 +494,50 @@ def scan(
         spec = match_watch(chat, config.watches)
         if spec is None:
             continue
-        st = state.setdefault(chat.chat_id, ChatState())
-        st.label, st.priority = spec.label, spec.priority
-
-        ts = chat.last_activity_ms or 0
-        if ts <= st.last:
-            continue
-        st.last = ts
-
-        if seed:
-            st.open, st.nags, st.emitted = False, 0, 0.0
-            continue
-
-        outbound = bool(chat.preview_is_sender)
-        if outbound and config.inbound_only:
-            st.open, st.nags = False, 0
-            continue
-
-        if spec.text_match is not None:
-            if chat.preview_text is None:
-                warn(
-                    f"{spec.label}: text_match is set but the API gave no preview text "
-                    f"for {chat.chat_id} — treating as no match."
-                )
-            if not spec.text_match.search(chat.preview_text or ""):
-                st.open, st.nags = False, 0
-                continue
-
-        events.append(
-            Event(
-                kind="activity" if outbound else "reply",
-                chat_id=chat.chat_id,
-                label=spec.label,
-                text=collapse(chat.preview_text),
-                ts=ts,
-                priority=spec.priority,
-            )
+        event = observe(
+            spec, chat.chat_id,
+            ts=chat.last_activity_ms or 0,
+            is_sender=bool(chat.preview_is_sender),
+            text=chat.preview_text,
+            config=config, state=state, now=now, seed=seed, warn=warn,
         )
-        if outbound:
-            # Our own message is worth reporting when inbound_only is off, but it
-            # never means someone is waiting on us.
-            st.open, st.nags = False, 0
-        else:
-            st.open, st.nags, st.emitted = True, 0, now
+        if event is not None:
+            events.append(event)
     return events
+
+
+def apply_message(
+    message: "WatchMessage",
+    config: WatchConfig,
+    state: dict[str, ChatState],
+    *,
+    now: float,
+    titles: Optional[Mapping[str, str]] = None,
+    warn: Callable[[str], None] = lambda _m: None,
+) -> Optional[Event]:
+    """Run one pushed message through the same state machine `scan` uses.
+
+    The socket payload has no chat title, so `titles` supplies the chatID → title
+    map that `title_match` needs. An id missing from the map can still match a
+    watch pinned to an explicit `chat` id — the common case — but cannot match a
+    title regex, so that gap is warned about rather than passed over silently.
+    """
+    title = (titles or {}).get(message.chat_id)
+    if title is None and any(w.title_match for w in config.watches):
+        warn(
+            f"no title known for {message.chat_id} — it can match a chat id, "
+            f"but not a title_match, until the next reconcile"
+        )
+    probe = _TitledChat(message.chat_id, title or "")
+    spec = match_watch(probe, config.watches)
+    if spec is None:
+        return None
+    return observe(
+        spec, message.chat_id,
+        ts=message.ts, is_sender=message.is_sender, text=message.text,
+        msg_id=message.message_id,
+        config=config, state=state, now=now, warn=warn,
+    )
 
 
 def nag_pass(config: WatchConfig, state: dict[str, ChatState], *, now: float) -> list[Event]:

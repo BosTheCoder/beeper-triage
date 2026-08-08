@@ -70,6 +70,7 @@ Both commands support `--agent` mode for non-interactive JSON I/O.
 - **editor.py**: Opens `$EDITOR` with a temp file for draft review.
 - **watch.py**: The `beeper watch` engine — config validation (`parse_config` for a decoded mapping, `load_config` for a TOML file), the poll state machine (`scan` / `nag_pass`), atomic state file, and the `run` loop. Pure: chats in, events out, no typer and no requests, so the state machine is testable without a network **and vendorable into beeper-inbox's container**. Spec: `docs/superpowers/specs/2026-08-07-beeper-watch-design.md`.
 - **watch_cli.py**: Typer wiring over `watch.py` (`watch`, `watch list`, `watch check`). Kept separate so the engine stays dependency-free — don't import typer into `watch.py`.
+- **watch_ws.py**: Push transport for `watch` — Beeper's experimental event socket (`/v1/ws`, advertised by `GET /v1/info`). Transport only: connect, subscribe, reconnect, yield normalised `WatchMessage`. It makes no decisions; those stay in `watch.observe`. Needs `websockets`, imported lazily, so poll-only callers never load it.
 - **wsl_proxy.py**: TCP proxy (runs on Windows) bridging WSL IPv4 → Beeper's IPv6 loopback. Entry point: `beeper-proxy`.
 
 ### Key Design Decisions
@@ -79,6 +80,7 @@ Both commands support `--agent` mode for non-interactive JSON I/O.
 - **SMS splitting**: Messages to UK landlines (02x/03x/08x) are split at 160 chars to avoid silent MMS drops. Mobile numbers (07x) are sent as-is.
 - **Chat cache**: `list_chats()` caches results with a 6-hour TTL. Use `--refresh-chats` to bypass.
 - **Reply guidance**: Seven preset guidance modes affect LLM prompt construction. "analyse" and "todo" use entirely different system prompts.
+- **`watch` has two transports and one state machine**: `watch.observe()` is the single decision point — the poll reads `(ts, is_sender, text)` off a chat's preview, the socket reads them off the message. Don't reimplement the rules in either path. The socket carries live traffic; the poll is the reconcile pass that covers a dropped socket, an experimental interface changing shape, and the chatID→title map `title_match` needs. Only the push path dedupes on `last_msg_id` (the socket re-delivers a message as its send status advances); the poll keeps its `ts <= last` rule.
 - **`watch` polls uncached, and its re-raise is capped**: `list_chats` defaults to the 6-hour cache, so a watcher that forgets `use_cache=False` goes silently dead — silence is indistinguishable from "nothing happened", so this fails invisibly. And a chat whose last message is inbound has *not* necessarily gone unanswered (phone, email, in person), so the re-raise is capped at `nag.count`. Both are asserted in `tests/test_watch.py`; read spec §3.4 and §5.3 before loosening either.
 
 ### Reply Guidance Modes

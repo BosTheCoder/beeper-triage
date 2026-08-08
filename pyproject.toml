@@ -15,6 +15,7 @@ dependencies = [
   "python-dotenv",
   "requests",
   "typer",
+  "websockets>=13",   # push transport for `watch` (watch_ws.py)
 ]
 
 [project.scripts]

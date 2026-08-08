@@ -431,7 +431,7 @@ def test_text_match_with_no_preview_text_warns(tmp_path):
         cfg, FakeClient([[chat(chat_id=CHAT_B, text=None)]]), max_polls=1
     )
     assert lines == []
-    assert "preview text" in err
+    assert "no message text" in err
 
 
 # --------------------------------------------------------------------------
