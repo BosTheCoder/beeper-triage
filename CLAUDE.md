@@ -106,6 +106,6 @@ When `--agent` is passed, the CLI:
 
 ## Dependencies
 
-**Runtime**: `typer`, `python-dotenv`, `requests`, `beeper_desktop_api`
+**Runtime**: `typer`, `python-dotenv`, `requests`, `beeper_desktop_api`, `websockets` (push transport only, imported lazily)
 **System**: `fzf` (interactive mode only), a text editor (`$EDITOR`)
 **Test**: `pytest`
