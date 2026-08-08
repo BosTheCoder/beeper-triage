@@ -7,7 +7,7 @@ import json
 import mimetypes
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -131,30 +131,20 @@ class BeeperClient:
             return None
 
     def _save_cache(self, chats: list[BeeperChat]) -> None:
-        """Save chats to cache with current timestamp."""
+        """Save chats to cache with current timestamp.
+
+        The row is derived from the dataclass rather than listed by hand: the
+        hand-written version silently dropped every field added after it, so a
+        cache round-trip quietly reset them to their defaults (``is_pinned``
+        came back False on any cache hit, which reads as "safe to archive" for
+        a chat Beeper will refuse to archive). ``asdict`` cannot fall behind.
+        """
         try:
             os.makedirs(self.CACHE_DIR, exist_ok=True)
             timestamp_ms = int(datetime.datetime.now().timestamp() * 1000)
             data = {
                 "timestamp": timestamp_ms,
-                "chats": [
-                    {
-                        "chat_id": chat.chat_id,
-                        "title": chat.title,
-                        "unread_count": chat.unread_count,
-                        "preview_is_sender": chat.preview_is_sender,
-                        "is_muted": chat.is_muted,
-                        "last_activity_ms": chat.last_activity_ms,
-                        "account_id": chat.account_id,
-                        "network_type": chat.network_type,
-                        "account_label": chat.account_label,
-                        "is_group": chat.is_group,
-                        "network": chat.network,
-                        "is_archived": chat.is_archived,
-                        "preview_text": chat.preview_text,
-                    }
-                    for chat in chats
-                ],
+                "chats": [asdict(chat) for chat in chats],
             }
             with open(self.CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)

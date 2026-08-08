@@ -462,3 +462,66 @@ def test_list_labels_caches_in_process():
     c.list_labels()
     c.list_labels()
     assert c.raw_request.call_count == 1
+
+
+# --------------------------------------------------------------------------
+# chat cache round-trip
+# --------------------------------------------------------------------------
+
+def _cached_client(tmp_path, monkeypatch):
+    c = BeeperClient.__new__(BeeperClient)
+    monkeypatch.setattr(BeeperClient, "CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(BeeperClient, "CACHE_FILE", str(tmp_path / "chats.json"))
+    return c
+
+
+def test_cache_round_trip_preserves_every_field(tmp_path, monkeypatch):
+    # The save row used to be a hand-written dict, so every field added after it
+    # was silently dropped and came back as its default on a cache hit.
+    from dataclasses import fields
+
+    from beeper_triage.beeper_client import BeeperChat
+
+    c = _cached_client(tmp_path, monkeypatch)
+    original = BeeperChat(
+        chat_id="!x:beeper.local",
+        title="Pinned thing",
+        unread_count=3,
+        preview_is_sender=True,
+        is_muted=True,
+        last_activity_ms=1_700_000_000_000,
+        account_id="acct",
+        network_type="whatsapp",
+        account_label="Me",
+        is_group=True,
+        network="whatsapp",
+        is_archived=True,
+        is_pinned=True,
+        preview_text="see you then",
+    )
+    c._save_cache([original])
+    (restored,) = c._get_cache()
+    for f in fields(BeeperChat):
+        assert getattr(restored, f.name) == getattr(original, f.name), f.name
+
+
+def test_cache_round_trip_keeps_is_pinned(tmp_path, monkeypatch):
+    from beeper_triage.beeper_client import BeeperChat
+
+    c = _cached_client(tmp_path, monkeypatch)
+    c._save_cache([BeeperChat(
+        chat_id="!p", title="Pinned", unread_count=0, preview_is_sender=False,
+        is_muted=False, is_pinned=True,
+    )])
+    assert c._get_cache()[0].is_pinned is True
+
+
+def test_expired_cache_is_ignored(tmp_path, monkeypatch):
+    from beeper_triage.beeper_client import BeeperChat
+
+    c = _cached_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(BeeperClient, "CACHE_TTL_MS", -1)
+    c._save_cache([BeeperChat(
+        chat_id="!p", title="T", unread_count=0, preview_is_sender=False, is_muted=False,
+    )])
+    assert c._get_cache() is None

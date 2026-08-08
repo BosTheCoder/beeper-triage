@@ -5,7 +5,13 @@ Design spec: ``docs/superpowers/specs/2026-08-07-beeper-watch-design.md``.
 The engine half of this module is deliberately pure: ``scan`` and ``nag_pass``
 take a chat list and a state dict and return events. Every bug this feature
 exists to prevent lives in that state machine, so it is testable without a
-network. ``run`` is the loop; the Typer wiring is at the bottom.
+network. ``run`` is the loop.
+
+This module is deliberately free of typer, requests and any surface concern:
+the only intra-package import is ``beeper_client``, which is itself stdlib-only
+until a client is constructed. That is what lets ``beeper-inbox`` vendor it into
+a container that has no CLI dependencies. The Typer wiring lives in
+``watch_cli.py``.
 
 Three constraints from the spec are load-bearing and easy to undo by accident:
 
@@ -20,21 +26,16 @@ Three constraints from the spec are load-bearing and easy to undo by accident:
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
-import typer
-
-from .beeper_client import BeeperChat, BeeperSDKError
-from .output import emit, resolve_json_flag
-from .verbs import build_client_or_exit
+from .beeper_client import BeeperChat
 
 CONFIG_DIR = Path("~/.config/beeper-watches").expanduser()
 STATE_DIR = Path("~/.local/state/beeper-watch").expanduser()
@@ -136,10 +137,72 @@ def _parse_watch(entry: Any, index: int) -> WatchSpec:
     )
 
 
+def parse_config(
+    data: Mapping[str, Any],
+    *,
+    default_name: str = "watch",
+    source: str = "config",
+    state_dir: "str | Path | None" = None,
+    state_override: "str | Path | None" = None,
+) -> WatchConfig:
+    """Validate an already-decoded config mapping into a WatchConfig.
+
+    Split out from ``load_config`` so a watch registered over HTTP (a JSON body)
+    is validated by exactly the same rules, and fails with the same messages, as
+    one read from a TOML file. Only the decoding differs.
+    """
+    if not isinstance(data, Mapping):
+        raise WatchConfigError(f"{source}: config must be a table/object.")
+    unknown = sorted(set(data) - _TOP_KEYS)
+    if unknown:
+        raise WatchConfigError(
+            f"{source}: unknown top-level key(s) {', '.join(unknown)}; "
+            f"expected any of {', '.join(sorted(_TOP_KEYS))}."
+        )
+
+    entries = data.get("watch") or []
+    if not isinstance(entries, (list, tuple)):
+        raise WatchConfigError(f"{source}: 'watch' must be a list of tables.")
+    if not entries:
+        raise WatchConfigError(f"{source}: no [[watch]] entries — nothing to watch.")
+    watches = [_parse_watch(entry, i) for i, entry in enumerate(entries)]
+
+    name = str(data.get("name") or default_name)
+    nag = data.get("nag") or {}
+    filters = data.get("filters") or {}
+
+    try:
+        poll_seconds = int(data.get("poll_seconds", 180))
+        nag_after = int(nag.get("after_seconds", 1800))
+        nag_count = int(nag.get("count", 1))
+    except (TypeError, ValueError) as exc:
+        raise WatchConfigError(f"{source}: poll_seconds and nag values must be numbers.") from exc
+    if poll_seconds < 1:
+        raise WatchConfigError(f"{source}: poll_seconds must be at least 1.")
+
+    if state_override is not None:
+        state_path = Path(state_override).expanduser()
+    elif data.get("state"):
+        state_path = Path(str(data["state"])).expanduser()
+    else:
+        state_path = Path(state_dir).expanduser() if state_dir else STATE_DIR
+        state_path = state_path / f"{name}.json"
+
+    return WatchConfig(
+        name=name,
+        state_path=state_path,
+        watches=watches,
+        poll_seconds=poll_seconds,
+        nag_after_seconds=nag_after,
+        nag_count=nag_count,
+        inbound_only=bool(filters.get("inbound_only", True)),
+    )
+
+
 def load_config(
     path: "str | Path", *, state_override: "str | Path | None" = None
 ) -> WatchConfig:
-    """Parse a watch TOML file into a validated WatchConfig."""
+    """Read and validate a watch TOML file."""
     try:
         import tomllib
     except ModuleNotFoundError as exc:  # pragma: no cover - Python 3.10 only
@@ -156,39 +219,11 @@ def load_config(
     except tomllib.TOMLDecodeError as exc:
         raise WatchConfigError(f"Invalid TOML in {path}: {exc}") from exc
 
-    unknown = sorted(set(data) - _TOP_KEYS)
-    if unknown:
-        raise WatchConfigError(
-            f"{path}: unknown top-level key(s) {', '.join(unknown)}; "
-            f"expected any of {', '.join(sorted(_TOP_KEYS))}."
-        )
-
-    entries = data.get("watch") or []
-    if not entries:
-        raise WatchConfigError(f"{path}: no [[watch]] entries — nothing to watch.")
-    watches = [_parse_watch(entry, i) for i, entry in enumerate(entries)]
-
-    name = str(data.get("name") or path.stem)
-    nag = data.get("nag") or {}
-    filters = data.get("filters") or {}
-
-    if state_override is not None:
-        state_path = Path(state_override).expanduser()
-    elif data.get("state"):
-        state_path = Path(str(data["state"])).expanduser()
-    else:
-        state_path = STATE_DIR / f"{name}.json"
-
-    return WatchConfig(
-        name=name,
-        state_path=state_path,
-        watches=watches,
-        poll_seconds=int(data.get("poll_seconds", 180)),
-        nag_after_seconds=int(nag.get("after_seconds", 1800)),
-        nag_count=int(nag.get("count", 1)),
-        inbound_only=bool(filters.get("inbound_only", True)),
-        path=path,
+    config = parse_config(
+        data, default_name=path.stem, source=str(path), state_override=state_override
     )
+    config.path = path
+    return config
 
 
 def match_watch(chat: BeeperChat, watches: Iterable[WatchSpec]) -> Optional[WatchSpec]:
@@ -452,151 +487,3 @@ def run(
             break
         sleep(config.poll_seconds)
     return state
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-
-watch_app = typer.Typer(
-    invoke_without_command=True,
-    help="Watch named chats and print one line per new message.",
-)
-
-
-def _load_or_exit(config: Optional[str], state: Optional[str]) -> WatchConfig:
-    if not config:
-        typer.echo("Provide --config <path|name>.", err=True)
-        raise typer.Exit(code=2)
-    try:
-        return load_config(resolve_config_path(config), state_override=state)
-    except WatchConfigError as exc:
-        typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=2)
-
-
-def _resolve(config: WatchConfig, *, agent: bool, json_: Optional[bool]) -> list[dict]:
-    """Match every spec against the live chat list, for `list` and `check`."""
-    client = build_client_or_exit(agent=agent, json_flag=json_)
-    try:
-        chats = client.list_chats(use_cache=False)
-    except BeeperSDKError as exc:
-        emit({"error": str(exc)}, json_flag=resolve_json_flag(agent, json_), human=f"Error: {exc}")
-        raise typer.Exit(code=1)
-    state = load_state(config.state_path)
-    rows = []
-    for spec in config.watches:
-        matched = [c for c in chats if spec.matches(c)]
-        rows.append(
-            {
-                "label": spec.label,
-                "priority": spec.priority,
-                "textMatch": spec.text_match.pattern if spec.text_match else None,
-                "chats": [
-                    {
-                        "chatID": c.chat_id,
-                        "title": c.title,
-                        "lastActivity": c.last_activity_ms,
-                        "previewIsSender": c.preview_is_sender,
-                        "open": bool(state.get(c.chat_id) and state[c.chat_id].open),
-                    }
-                    for c in matched
-                ],
-            }
-        )
-    return rows
-
-
-def _render_rows(config: WatchConfig, rows: list[dict]) -> str:
-    lines = [f"{config.name} ({len(config.watches)} watches, state {config.state_path})"]
-    for row in rows:
-        tag = f" [{row['priority']}]" if row["priority"] else ""
-        lines.append(f"  {row['label']}{tag}")
-        if not row["chats"]:
-            lines.append("    (no chat matched)")
-        for c in row["chats"]:
-            flag = " ← open" if c["open"] else ""
-            lines.append(f"    {c['chatID']}  {c['title']}  last={c['lastActivity']}{flag}")
-        if row["textMatch"]:
-            lines.append(f"    text_match: {row['textMatch']}")
-    return "\n".join(lines)
-
-
-@watch_app.callback()
-def watch_main(
-    ctx: typer.Context,
-    config: Optional[str] = typer.Option(
-        None, "--config", "-c", help="Watch config path, or a name in ~/.config/beeper-watches."
-    ),
-    once: bool = typer.Option(False, "--once", help="Single poll then exit (cron, tests)."),
-    json_: bool = typer.Option(False, "--json", help="One JSON object per line instead of text."),
-    dry_run: bool = typer.Option(
-        False, "--dry-run", help="Seed state from current reality and emit nothing."
-    ),
-    state: Optional[str] = typer.Option(None, "--state", help="Override the config's state path."),
-) -> None:
-    """Poll the configured chats and print one line per event."""
-    if ctx.invoked_subcommand is not None:
-        return
-    cfg = _load_or_exit(config, state)
-    # Only events belong on stdout, but the proxy bootstrap in runtime.py narrates
-    # itself there — so lend it stderr for the duration of the connect.
-    with contextlib.redirect_stdout(sys.stderr):
-        client = build_client_or_exit(agent=True, json_flag=None)
-    run(
-        client,
-        cfg,
-        max_polls=1 if (once or dry_run) else None,
-        seed=dry_run,
-        json_mode=json_,
-    )
-
-
-@watch_app.command("list")
-def watch_list(
-    config: Optional[str] = typer.Option(None, "--config", "-c", help="Watch config path or name."),
-    state: Optional[str] = typer.Option(None, "--state", help="Override the config's state path."),
-    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
-    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
-) -> None:
-    """Show the configured watches, the chats they resolve to, and last activity."""
-    cfg = _load_or_exit(config, state)
-    rows = _resolve(cfg, agent=agent, json_=json_)
-    emit(
-        {"name": cfg.name, "state": str(cfg.state_path), "watches": rows},
-        json_flag=resolve_json_flag(agent, json_),
-        human=_render_rows(cfg, rows),
-    )
-
-
-@watch_app.command("check")
-def watch_check(
-    config: str = typer.Argument(..., help="Watch config path, or a name in ~/.config/beeper-watches."),
-    state: Optional[str] = typer.Option(None, "--state", help="Override the config's state path."),
-    agent: bool = typer.Option(False, "--agent", help="Agent mode: force JSON output."),
-    json_: Optional[bool] = typer.Option(None, "--json/--no-json", help="Force/disable JSON output."),
-) -> None:
-    """Resolve every watch against live chats; exit 1 if any matches nothing.
-
-    Run this after editing a config. A typo'd title_match otherwise fails silently
-    — the watch simply never fires, and silence is the one signal this tool cannot
-    distinguish from "nothing happened".
-    """
-    cfg = _load_or_exit(config, state)
-    rows = _resolve(cfg, agent=agent, json_=json_)
-    unresolved = [row["label"] for row in rows if not row["chats"]]
-    human = _render_rows(cfg, rows)
-    if unresolved:
-        human += "\n\nUnresolved: " + ", ".join(unresolved)
-    emit(
-        {"name": cfg.name, "watches": rows, "unresolved": unresolved},
-        json_flag=resolve_json_flag(agent, json_),
-        human=human,
-    )
-    if unresolved:
-        raise typer.Exit(code=1)
-
-
-def register(app: typer.Typer) -> None:
-    """Attach the `watch` command group to the given Typer app."""
-    app.add_typer(watch_app, name="watch")

@@ -445,7 +445,7 @@ def test_watch_check_reports_resolved_chats(tmp_path, monkeypatch):
         + '\n[[watch]]\ntitle_match = "(?i)damp"\nlabel = "DAMP"\n',
     )
     fake = FakeClient([[chat(), chat(chat_id=CHAT_B, title="Damp Detectives")]])
-    monkeypatch.setattr("beeper_triage.watch.build_client_or_exit", lambda **k: fake)
+    monkeypatch.setattr("beeper_triage.watch_cli.build_client_or_exit", lambda **k: fake)
     result = runner.invoke(app, ["watch", "check", str(cfg_path), "--json"])
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
@@ -461,7 +461,7 @@ def test_watch_check_fails_on_a_pattern_that_matches_nothing(tmp_path, monkeypat
         + '\n[[watch]]\ntitle_match = "(?i)typo"\nlabel = "NOPE"\n',
     )
     monkeypatch.setattr(
-        "beeper_triage.watch.build_client_or_exit", lambda **k: FakeClient([[chat()]])
+        "beeper_triage.watch_cli.build_client_or_exit", lambda **k: FakeClient([[chat()]])
     )
     result = runner.invoke(app, ["watch", "check", str(cfg_path), "--json"])
     assert result.exit_code == 1
@@ -471,7 +471,7 @@ def test_watch_check_fails_on_a_pattern_that_matches_nothing(tmp_path, monkeypat
 def test_watch_list_shows_state(tmp_path, monkeypatch):
     cfg_path = write_config(tmp_path, BASIC.format(state=tmp_path / "s.json"))
     monkeypatch.setattr(
-        "beeper_triage.watch.build_client_or_exit", lambda **k: FakeClient([[chat()]])
+        "beeper_triage.watch_cli.build_client_or_exit", lambda **k: FakeClient([[chat()]])
     )
     result = runner.invoke(app, ["watch", "list", "--config", str(cfg_path), "--json"])
     assert result.exit_code == 0
@@ -483,7 +483,7 @@ def test_watch_list_shows_state(tmp_path, monkeypatch):
 def test_watch_once_runs_a_single_poll(tmp_path, monkeypatch):
     cfg_path = write_config(tmp_path, BASIC.format(state=tmp_path / "s.json"))
     fake = FakeClient([[chat()]])
-    monkeypatch.setattr("beeper_triage.watch.build_client_or_exit", lambda **k: fake)
+    monkeypatch.setattr("beeper_triage.watch_cli.build_client_or_exit", lambda **k: fake)
     result = runner.invoke(app, ["watch", "--config", str(cfg_path), "--once"])
     assert result.exit_code == 0
     assert result.stdout.strip() == "REPLY: ELEC AK Electrical | hello there"
@@ -493,7 +493,7 @@ def test_watch_once_runs_a_single_poll(tmp_path, monkeypatch):
 def test_watch_dry_run_emits_nothing(tmp_path, monkeypatch):
     cfg_path = write_config(tmp_path, BASIC.format(state=tmp_path / "s.json"))
     monkeypatch.setattr(
-        "beeper_triage.watch.build_client_or_exit", lambda **k: FakeClient([[chat()]])
+        "beeper_triage.watch_cli.build_client_or_exit", lambda **k: FakeClient([[chat()]])
     )
     result = runner.invoke(app, ["watch", "--config", str(cfg_path), "--dry-run"])
     assert result.exit_code == 0
@@ -540,3 +540,66 @@ def test_list_chats_populates_preview_text(monkeypatch):
     monkeypatch.setattr(BeeperClient, "_save_cache", lambda self, chats: None)
     (out,) = client.list_chats(use_cache=False)
     assert out.preview_text == "the engineer is booked"
+
+
+# --------------------------------------------------------------------------
+# parse_config — the shared validator behind TOML files and the HTTP API
+# --------------------------------------------------------------------------
+
+def test_parse_config_from_a_mapping(tmp_path):
+    cfg = W.parse_config(
+        {
+            "name": "api-watch",
+            "poll_seconds": 90,
+            "nag": {"after_seconds": 60, "count": 2},
+            "filters": {"inbound_only": False},
+            "watch": [{"chat": CHAT_A, "label": "ELEC", "priority": "high"}],
+        },
+        state_dir=tmp_path,
+    )
+    assert cfg.name == "api-watch"
+    assert cfg.poll_seconds == 90
+    assert (cfg.nag_after_seconds, cfg.nag_count) == (60, 2)
+    assert cfg.inbound_only is False
+    assert cfg.state_path == tmp_path / "api-watch.json"
+    assert cfg.watches[0].priority == "high"
+
+
+def test_parse_config_applies_the_same_rules_as_toml(tmp_path):
+    # The API must reject exactly what the TOML loader rejects.
+    with pytest.raises(W.WatchConfigError, match="title_match"):
+        W.parse_config({"watch": [{"title_match": "(unclosed"}]}, state_dir=tmp_path)
+    with pytest.raises(W.WatchConfigError, match="unknown key"):
+        W.parse_config({"watch": [{"title-match": "x"}]}, state_dir=tmp_path)
+    with pytest.raises(W.WatchConfigError, match="unknown top-level key"):
+        W.parse_config({"watch": [{"chat": "!x"}], "nope": 1}, state_dir=tmp_path)
+    with pytest.raises(W.WatchConfigError, match="no \\[\\[watch\\]\\]"):
+        W.parse_config({"name": "x"}, state_dir=tmp_path)
+    with pytest.raises(W.WatchConfigError, match="chat.*title_match"):
+        W.parse_config({"watch": [{"label": "orphan"}]}, state_dir=tmp_path)
+
+
+def test_parse_config_rejects_nonsense_shapes(tmp_path):
+    with pytest.raises(W.WatchConfigError, match="must be a list"):
+        W.parse_config({"watch": "not-a-list"}, state_dir=tmp_path)
+    with pytest.raises(W.WatchConfigError, match="not a table"):
+        W.parse_config({"watch": ["nope"]}, state_dir=tmp_path)
+    with pytest.raises(W.WatchConfigError, match="must be numbers"):
+        W.parse_config(
+            {"watch": [{"chat": "!x"}], "poll_seconds": "soon"}, state_dir=tmp_path
+        )
+    with pytest.raises(W.WatchConfigError, match="at least 1"):
+        W.parse_config({"watch": [{"chat": "!x"}], "poll_seconds": 0}, state_dir=tmp_path)
+
+
+def test_parse_config_default_name_and_state_dir(tmp_path):
+    cfg = W.parse_config(
+        {"watch": [{"chat": "!x"}]}, default_name="fallback", state_dir=tmp_path
+    )
+    assert cfg.name == "fallback"
+    assert cfg.state_path == tmp_path / "fallback.json"
+
+
+def test_load_config_records_its_path(tmp_path):
+    path = write_config(tmp_path, BASIC.format(state=tmp_path / "s.json"))
+    assert W.load_config(path).path == path

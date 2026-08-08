@@ -68,7 +68,8 @@ Both commands support `--agent` mode for non-interactive JSON I/O.
 - **openrouter_client.py**: REST client for OpenRouter API via `requests`.
 - **prompts.py**: Builds LLM prompts. Three prompt builders: `build_prompt()` (reply), `build_todo_prompt()` (acknowledge + todo), `build_analyse_prompt()` (next steps analysis).
 - **editor.py**: Opens `$EDITOR` with a temp file for draft review.
-- **watch.py**: The `beeper watch` verb — TOML config loader, the poll state machine (`scan` / `nag_pass`), atomic state file, and the Typer wiring. The engine half is pure (chats in, events out) so the state machine is testable without a network. Spec: `docs/superpowers/specs/2026-08-07-beeper-watch-design.md`.
+- **watch.py**: The `beeper watch` engine — config validation (`parse_config` for a decoded mapping, `load_config` for a TOML file), the poll state machine (`scan` / `nag_pass`), atomic state file, and the `run` loop. Pure: chats in, events out, no typer and no requests, so the state machine is testable without a network **and vendorable into beeper-inbox's container**. Spec: `docs/superpowers/specs/2026-08-07-beeper-watch-design.md`.
+- **watch_cli.py**: Typer wiring over `watch.py` (`watch`, `watch list`, `watch check`). Kept separate so the engine stays dependency-free — don't import typer into `watch.py`.
 - **wsl_proxy.py**: TCP proxy (runs on Windows) bridging WSL IPv4 → Beeper's IPv6 loopback. Entry point: `beeper-proxy`.
 
 ### Key Design Decisions
