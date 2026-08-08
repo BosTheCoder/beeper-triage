@@ -74,6 +74,11 @@ class BeeperChat:
     is_archived: bool = False  # True when the chat is archived (out of inbox)
     is_pinned: bool = False  # True when pinned — Beeper CANNOT archive a pinned chat
     preview_text: Optional[str] = None  # Body of the last message, for content matching
+    # Who sent the last message. In a group the name is often the raw network
+    # handle (`@whatsapp_lid-…`) rather than a display name, so `watch`'s
+    # sender_match tries the regex against both of these.
+    preview_sender_id: Optional[str] = None
+    preview_sender_name: Optional[str] = None
 
 
 @dataclass
@@ -211,12 +216,20 @@ class BeeperClient:
             preview = self._get_attr(chat, "preview", default=None)
             preview_is_sender = False
             preview_text: Optional[str] = None
+            preview_sender_id: Optional[str] = None
+            preview_sender_name: Optional[str] = None
             if preview is not None:
                 preview_is_sender = bool(
                     self._get_attr(preview, "is_sender", default=False)
                 )
                 raw_preview_text = self._get_attr(preview, "text", default=None)
                 preview_text = str(raw_preview_text) if raw_preview_text is not None else None
+                raw_sender_id = self._get_attr(preview, "senderID", "sender_id", default=None)
+                preview_sender_id = str(raw_sender_id) if raw_sender_id else None
+                raw_sender_name = self._get_attr(
+                    preview, "senderName", "sender_name", default=None
+                )
+                preview_sender_name = str(raw_sender_name) if raw_sender_name else None
             account_id = self._get_attr(chat, "accountID", "account_id", default=None)
             if account_id:
                 account_id = str(account_id)
@@ -282,6 +295,8 @@ class BeeperClient:
                         self._get_attr(chat, "is_pinned", "isPinned", default=False)
                     ),
                     preview_text=preview_text,
+                    preview_sender_id=preview_sender_id,
+                    preview_sender_name=preview_sender_name,
                 )
             )
 

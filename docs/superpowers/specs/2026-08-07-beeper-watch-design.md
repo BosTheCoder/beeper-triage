@@ -255,7 +255,7 @@ scratchpad was cleared mid-task. Endpoints: `POST /api/watches`, `GET /api/watch
 `DELETE /api/watches/{name}`, events appended to the existing log and surfaced in the UI.
 
 **Phase 3 — push.** Route Phase 2 events somewhere that reaches a phone. Out of scope
-until Phase 2 exists.
+until Phase 2 exists. *(Built 2026-08-08 — see §13.)*
 
 ## 9. Testing
 
@@ -318,11 +318,18 @@ following the repo's existing send-safety convention.
    field on every event, which looks like it exists for exactly that gap detection.
 3. **Marking handled without replying** (§5.3). Does `mark-read` clear `open`, or does
    `watch` need its own ack? Deferrable — the nag cap removes the urgency.
-4. **Group chats.** Should a `[[watch]]` be able to filter on *sender* within a group, not
-   just the chat? Real case: the 13 Edward group contains the tenant and the contractor,
-   and only one of them is load-bearing at a time. **Now cheap to build:** `preview` is a
-   full `Message`, so it already carries `senderID` and `senderName` — a `sender_match`
-   key would mirror `text_match` exactly.
+4. **~~Group chats — filter on sender within a group?~~ Answered 2026-08-08 — built, and
+   it cost almost nothing.** `sender_match` mirrors `text_match`: a per-watch regex, a
+   filter rather than a selector. Both transports feed it for free — the socket's
+   `message.upserted` already carried `senderID`/`senderName`, and `preview` turned out to
+   carry them too (§3.3 only ever checked for `text`), so the poll needed two more fields
+   on `BeeperChat` and nothing else.
+
+   One thing the design had to account for: **`senderName` is frequently not a name.** In
+   a WhatsApp group it is often the raw LID (`@whatsapp_lid-81222210425044:beeper.local`),
+   identical to `senderID`. So the regex is tried against *both* fields and matches if
+   either hits, which means one pattern keeps working when a contact resolves on one
+   network and not on another.
 
 ## 11. Phase 1 as built
 
@@ -389,3 +396,40 @@ is JSON only.
 Verified live on 2026-08-08 against the WhatsApp self-chat: register → poller seeded and
 armed with nothing emitted → send → the event appeared on `GET /api/watches` within one
 tick → delete removed the watch and its state file.
+
+## 13. Phase 3 as built (2026-08-08)
+
+Phases 1–2 made a watch *durable*. It still had to be looked at — a fired event went to
+`events.jsonl` and sat there. Phase 3 is the part that reaches out.
+
+**Shipped**
+
+- `[notify]` block on a watch config: `sink`, `target`, `kinds`, `priorities`. Validated
+  by the engine (`NotifySpec`, `wants()`), delivered by `beeper-inbox/app/notify.py`.
+- One sink, `telegram` — the concierge's existing bot, so alerts land in the chat the
+  phone already has pinned. `notify.target` overrides the default chat.
+- Both transports notify through one shared `Notifier`, so the socket path and the
+  reconcile path cannot drift apart.
+- `GET /api/watches` reports `notify.ready` plus a reason when false.
+- `sender_match` (open question 4).
+
+**Design calls worth keeping**
+
+- **The engine describes delivery; it does not perform it.** Putting an HTTP client in
+  `watch.py` would undo the property that makes it vendorable into a container and mineable
+  by the extraction project. `sink` is a *name*, resolved by the host against a registry —
+  so a new route is a change in `notify.py` plus one word in a config. `tests/test_watch.py`
+  asserts the engine still imports no HTTP client; the split cannot rot quietly.
+- **stdlib `urllib`, not `requests`.** One JSON POST. `websockets` earned a dependency
+  because frame masking and ping/pong are real work; this doesn't.
+- **Log first, push second, never raise.** The event is durable before delivery is
+  attempted, and every failure becomes a `watch_notify_error` record. A phone that is off
+  must cost the buzz, not the loop.
+- **One message per tick.** A reconcile pass can fire several events for one watch; they
+  batch into a single message, capped at 10 lines plus a count.
+- **`ok: false` despite HTTP 200** is a failure — the trap `concierge/telegram.py` already
+  documents.
+
+**Not built** — `mark-read` as an ack (open question 3) is still open; the nag cap keeps
+it from mattering. There is no `--push` on the CLI: `beeper watch` prints to stdout by
+design, and delivery needs a long-lived host, which is what beeper-inbox is for.

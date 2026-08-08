@@ -175,12 +175,42 @@ priority    = "high"                    # advisory; shows as [high] in the line
 title_match = "(?i)cadent|national grid"
 label       = "GAS network"
 text_match  = "(?i)\\b(appointment|engineer|book(ed|ing)?)\\b"
+
+[[watch]]
+title_match  = "(?i)13 edward"          # a group…
+sender_match = "(?i)richard|landlord"   # …but only when these two speak
+label        = "13 Edward — landlord"
 ```
 
-`text_match` is optional and **per-watch, never global** — the chat allowlist
-does the real work, and a keyword sweep over a whole account is the part most
-likely to generate false positives. An unknown key in a `[[watch]]` block is a
-hard error, because a typo'd key would otherwise silently disable the watch.
+`text_match` and `sender_match` are optional and **per-watch, never global** —
+the chat allowlist does the real work, and a keyword sweep over a whole account
+is the part most likely to generate false positives. Neither one *selects* a
+chat, only filters messages inside one that `chat`/`title_match` already claimed;
+otherwise a group would appear and disappear from `watch check` depending on who
+spoke last. An unknown key in a `[[watch]]` block is a hard error, because a
+typo'd key would otherwise silently disable the watch.
+
+`sender_match` is tried against both the sender's display name and their network
+id, because a WhatsApp group often reports the raw handle
+(`@whatsapp_lid-8122…`) as the name — matching either means one regex works
+wherever the chat lives.
+
+### Notifying a phone
+
+A `[notify]` block says where fired events should be pushed:
+
+```toml
+[notify]
+sink       = "telegram"
+kinds      = ["reply", "unanswered"]   # optional; default all three
+priorities = ["high"]                  # optional; default all
+```
+
+The **CLI does not deliver this** — `beeper watch` prints to stdout, and the
+engine holds no network client on purpose. Delivery belongs to a long-lived
+host: register the same config with [beeper-inbox](../beeper-inbox) and its
+container sends it. The engine validates the block either way, so a typo fails
+at `watch check` rather than at 2am.
 
 ### Two things worth knowing before changing it
 

@@ -32,6 +32,8 @@ def chat(
     ts=1_000_000,
     is_sender=False,
     text="hello there",
+    sender_id=None,
+    sender_name=None,
 ):
     return BeeperChat(
         chat_id=chat_id,
@@ -41,6 +43,8 @@ def chat(
         is_muted=False,
         last_activity_ms=ts,
         preview_text=text,
+        preview_sender_id=sender_id,
+        preview_sender_name=sender_name,
     )
 
 
@@ -603,3 +607,195 @@ def test_parse_config_default_name_and_state_dir(tmp_path):
 def test_load_config_records_its_path(tmp_path):
     path = write_config(tmp_path, BASIC.format(state=tmp_path / "s.json"))
     assert W.load_config(path).path == path
+
+
+# --------------------------------------------------------------------------
+# sender_match (spec open question §4) — who spoke, within a claimed chat
+# --------------------------------------------------------------------------
+
+
+def sender_config(tmp_path, pattern="(?i)richard", **kw):
+    return W.parse_config(
+        {"watch": [{"chat": CHAT_A, "label": "13 Edward", "sender_match": pattern}]},
+        state_dir=tmp_path,
+        **kw,
+    )
+
+
+def test_sender_match_fires_for_the_named_sender(tmp_path):
+    cfg = sender_config(tmp_path)
+    (event,) = W.scan(
+        [chat(sender_name="Richard Davies")], cfg, {}, now=100.0
+    )
+    assert event.kind == "reply"
+
+
+def test_sender_match_silences_everyone_else(tmp_path):
+    cfg = sender_config(tmp_path)
+    state = {}
+    assert W.scan([chat(sender_name="Mikkel Allison")], cfg, state, now=100.0) == []
+    # ...and the chat is not left open, so the nag pass cannot resurrect it.
+    assert state[CHAT_A].open is False
+    assert W.nag_pass(cfg, state, now=999_999.0) == []
+
+
+def test_sender_match_also_tries_the_sender_id(tmp_path):
+    """A WhatsApp group's senderName is often the raw LID, not a display name."""
+    cfg = sender_config(tmp_path, pattern="whatsapp_lid-8122")
+    (event,) = W.scan(
+        [chat(
+            sender_id="@whatsapp_lid-81222210425044:beeper.local",
+            sender_name="@whatsapp_lid-81222210425044:beeper.local",
+        )],
+        cfg, {}, now=100.0,
+    )
+    assert event.kind == "reply"
+
+
+def test_sender_match_warns_when_no_sender_is_known(tmp_path):
+    cfg = sender_config(tmp_path)
+    warnings = []
+    assert W.scan([chat()], cfg, {}, now=100.0, warn=warnings.append) == []
+    assert any("sender_match is set but no sender" in w for w in warnings)
+
+
+def test_sender_match_applies_on_the_push_path_too(tmp_path):
+    cfg = sender_config(tmp_path)
+    state = {}
+    wrong = W.WatchMessage(
+        chat_id=CHAT_A, message_id="1", ts=2_000, is_sender=False,
+        text="hi", sender_name="Mikkel Allison",
+    )
+    right = W.WatchMessage(
+        chat_id=CHAT_A, message_id="2", ts=3_000, is_sender=False,
+        text="hi", sender_name="Richard Davies",
+    )
+    assert W.apply_message(wrong, cfg, state, now=1.0) is None
+    assert W.apply_message(right, cfg, state, now=2.0).kind == "reply"
+
+
+def test_sender_match_does_not_select_the_chat(tmp_path):
+    """It filters messages inside a claimed chat; it never claims one itself."""
+    with pytest.raises(W.WatchConfigError, match="needs a chat id"):
+        W.parse_config(
+            {"watch": [{"sender_match": "(?i)richard"}]}, state_dir=tmp_path
+        )
+    spec = sender_config(tmp_path).watches[0]
+    assert spec.matches(chat(sender_name="nobody at all")) is True
+
+
+def test_sender_match_rejects_a_bad_regex(tmp_path):
+    with pytest.raises(W.WatchConfigError, match="bad sender_match regex"):
+        W.parse_config(
+            {"watch": [{"chat": "!x", "sender_match": "(unclosed"}]}, state_dir=tmp_path
+        )
+
+
+def test_list_chats_populates_the_preview_sender(monkeypatch):
+    from beeper_triage.beeper_client import BeeperClient
+
+    class Preview:
+        is_sender = False
+        text = "hi"
+        senderID = "@richard:beeper.local"
+        senderName = "Richard Davies"
+
+    class Chat:
+        chat_id = "!x"
+        title = "Landlord"
+        preview = Preview()
+        unread_count = 0
+
+    client = BeeperClient.__new__(BeeperClient)
+    client._client = type("C", (), {"chats": type("X", (), {"list": staticmethod(lambda: [Chat()])})()})()
+    monkeypatch.setattr(BeeperClient, "_save_cache", lambda self, chats: None)
+    (out,) = client.list_chats(use_cache=False)
+    assert out.preview_sender_id == "@richard:beeper.local"
+    assert out.preview_sender_name == "Richard Davies"
+
+
+def test_preview_sender_defaults_to_none():
+    c = BeeperChat(
+        chat_id="!x", title="t", unread_count=0, preview_is_sender=False, is_muted=False
+    )
+    assert c.preview_sender_id is None and c.preview_sender_name is None
+
+
+# --------------------------------------------------------------------------
+# notify (Phase 3) — the engine validates it and carries it; it never delivers
+# --------------------------------------------------------------------------
+
+
+def notify_config(tmp_path, notify):
+    return W.parse_config(
+        {"watch": [{"chat": CHAT_A, "label": "L"}], "notify": notify}, state_dir=tmp_path
+    )
+
+
+def test_notify_defaults_to_none(tmp_path):
+    assert W.parse_config({"watch": [{"chat": "!x"}]}, state_dir=tmp_path).notify is None
+
+
+def test_notify_parses_a_full_block(tmp_path):
+    cfg = notify_config(tmp_path, {
+        "sink": "telegram", "target": "123",
+        "kinds": ["reply", "unanswered"], "priorities": ["high"],
+    })
+    assert cfg.notify.sink == "telegram"
+    assert cfg.notify.target == "123"
+    assert cfg.notify.kinds == frozenset({"reply", "unanswered"})
+    assert cfg.notify.priorities == frozenset({"high"})
+
+
+def test_notify_wants_filters_on_kind_and_priority(tmp_path):
+    spec = notify_config(tmp_path, {
+        "sink": "telegram", "kinds": ["reply"], "priorities": ["high"],
+    }).notify
+    assert spec.wants(W.Event("reply", CHAT_A, "L", priority="high")) is True
+    assert spec.wants(W.Event("activity", CHAT_A, "L", priority="high")) is False
+    assert spec.wants(W.Event("reply", CHAT_A, "L", priority="low")) is False
+    assert spec.wants(W.Event("reply", CHAT_A, "L")) is False
+
+
+def test_notify_omitted_filters_mean_everything(tmp_path):
+    spec = notify_config(tmp_path, {"sink": "telegram"}).notify
+    assert spec.wants(W.Event("activity", CHAT_A, "L")) is True
+    assert spec.wants(W.Event("unanswered", CHAT_A, "L", priority="low")) is True
+
+
+def test_notify_rejects_a_malformed_block(tmp_path):
+    with pytest.raises(W.WatchConfigError, match="notify.sink must be"):
+        notify_config(tmp_path, {"target": "123"})
+    with pytest.raises(W.WatchConfigError, match="unknown key"):
+        notify_config(tmp_path, {"sink": "telegram", "chat_id": "123"})
+    with pytest.raises(W.WatchConfigError, match="must be a table"):
+        notify_config(tmp_path, "telegram")
+    with pytest.raises(W.WatchConfigError, match="must be a list of strings"):
+        notify_config(tmp_path, {"sink": "telegram", "kinds": "reply"})
+    with pytest.raises(W.WatchConfigError, match="unknown value"):
+        notify_config(tmp_path, {"sink": "telegram", "kinds": ["replies"]})
+
+
+def test_notify_rejects_an_empty_filter_list(tmp_path):
+    """`kinds = []` reads as 'nothing qualifies' — almost certainly a mistake."""
+    with pytest.raises(W.WatchConfigError, match="omit it to allow everything"):
+        notify_config(tmp_path, {"sink": "telegram", "kinds": []})
+
+
+def test_notify_survives_a_toml_round_trip(tmp_path):
+    path = write_config(tmp_path, f'''
+state = "{tmp_path / "s.json"}"
+[[watch]]
+chat = "{CHAT_A}"
+[notify]
+sink = "telegram"
+kinds = ["unanswered"]
+''')
+    assert W.load_config(path).notify.kinds == frozenset({"unanswered"})
+
+
+def test_the_engine_still_imports_no_network_client():
+    """Phase 3 describes delivery in config; it must not start doing delivery."""
+    source = (W.__file__ and open(W.__file__, encoding="utf-8").read()) or ""
+    for banned in ("import requests", "import urllib", "import typer", "import websockets"):
+        assert banned not in source

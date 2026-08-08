@@ -58,6 +58,7 @@ def _resolve(config: WatchConfig, *, agent: bool, json_: Optional[bool]) -> list
                 "label": spec.label,
                 "priority": spec.priority,
                 "textMatch": spec.text_match.pattern if spec.text_match else None,
+                "senderMatch": spec.sender_match.pattern if spec.sender_match else None,
                 "chats": [
                     {
                         "chatID": c.chat_id,
@@ -85,6 +86,8 @@ def _render_rows(config: WatchConfig, rows: list[dict]) -> str:
             lines.append(f"    {c['chatID']}  {c['title']}  last={c['lastActivity']}{flag}")
         if row["textMatch"]:
             lines.append(f"    text_match: {row['textMatch']}")
+        if row["senderMatch"]:
+            lines.append(f"    sender_match: {row['senderMatch']}")
     return "\n".join(lines)
 
 

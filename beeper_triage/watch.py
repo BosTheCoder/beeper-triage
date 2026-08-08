@@ -42,8 +42,10 @@ CONFIG_DIR = Path("~/.config/beeper-watches").expanduser()
 STATE_DIR = Path("~/.local/state/beeper-watch").expanduser()
 PREVIEW_CHARS = 160
 
-_WATCH_KEYS = {"chat", "title_match", "text_match", "label", "priority"}
-_TOP_KEYS = {"name", "poll_seconds", "state", "nag", "filters", "watch"}
+_WATCH_KEYS = {"chat", "title_match", "text_match", "sender_match", "label", "priority"}
+_TOP_KEYS = {"name", "poll_seconds", "state", "nag", "filters", "watch", "notify"}
+_NOTIFY_KEYS = {"sink", "target", "kinds", "priorities"}
+EVENT_KINDS = frozenset({"reply", "activity", "unanswered"})
 
 
 class WatchConfigError(ValueError):
@@ -63,14 +65,45 @@ class WatchSpec:
     chat_id: Optional[str] = None
     title_match: Optional[re.Pattern] = None
     text_match: Optional[re.Pattern] = None
+    sender_match: Optional[re.Pattern] = None
     priority: Optional[str] = None
 
     def matches(self, chat: BeeperChat) -> bool:
+        """Whether this spec *claims* the chat. Content filters are not consulted.
+
+        ``text_match`` and ``sender_match`` narrow which messages inside a claimed
+        chat are worth reporting; they never select the chat, or a group would
+        appear and disappear from ``watch check`` depending on who spoke last.
+        """
         if self.chat_id and chat.chat_id == self.chat_id:
             return True
         if self.title_match and self.title_match.search(chat.title or ""):
             return True
         return False
+
+
+@dataclass
+class NotifySpec:
+    """Where a fired event should be pushed, and which events qualify.
+
+    The engine validates this and hands it on; it never delivers. Delivery needs
+    a network client and a long-lived process, and this module has neither by
+    design (see the module docstring) — so ``beeper-inbox`` owns the sinks and
+    looks one up by ``sink`` name. Adding a sink is therefore a change in the
+    host, not here, and the config stays a plain description of intent.
+    """
+
+    sink: str
+    target: Optional[str] = None
+    kinds: Optional[frozenset] = None       # None = every kind
+    priorities: Optional[frozenset] = None  # None = every priority
+
+    def wants(self, event: "Event") -> bool:
+        if self.kinds is not None and event.kind not in self.kinds:
+            return False
+        if self.priorities is not None and (event.priority or "") not in self.priorities:
+            return False
+        return True
 
 
 @dataclass
@@ -82,6 +115,7 @@ class WatchConfig:
     nag_after_seconds: int = 1800
     nag_count: int = 1
     inbound_only: bool = True
+    notify: Optional[NotifySpec] = None
     path: Optional[Path] = None
 
 
@@ -134,7 +168,56 @@ def _parse_watch(entry: Any, index: int) -> WatchSpec:
             if entry.get("text_match")
             else None
         ),
+        sender_match=(
+            _compile(entry["sender_match"], "sender_match", label)
+            if entry.get("sender_match")
+            else None
+        ),
         priority=str(entry["priority"]) if entry.get("priority") else None,
+    )
+
+
+def _parse_notify(raw: Any, source: str) -> Optional[NotifySpec]:
+    if not raw:
+        return None
+    if not isinstance(raw, Mapping):
+        raise WatchConfigError(f"{source}: 'notify' must be a table/object.")
+    unknown = sorted(set(raw) - _NOTIFY_KEYS)
+    if unknown:
+        raise WatchConfigError(
+            f"{source}: notify has unknown key(s) {', '.join(unknown)}; "
+            f"expected any of {', '.join(sorted(_NOTIFY_KEYS))}."
+        )
+    sink = raw.get("sink")
+    if not sink or not isinstance(sink, str):
+        raise WatchConfigError(f"{source}: notify.sink must be a non-empty string.")
+
+    def _set(key: str, allowed: Optional[frozenset] = None) -> Optional[frozenset]:
+        value = raw.get(key)
+        if value is None:
+            return None
+        if isinstance(value, str) or not isinstance(value, (list, tuple, set, frozenset)):
+            raise WatchConfigError(f"{source}: notify.{key} must be a list of strings.")
+        items = frozenset(str(v) for v in value)
+        if not items:
+            # An empty list reads as "none of them", which would silently mute the
+            # watch — almost certainly not what was meant. Omit the key for "all".
+            raise WatchConfigError(
+                f"{source}: notify.{key} is empty; omit it to allow everything."
+            )
+        if allowed is not None and not items <= allowed:
+            bad = ", ".join(sorted(items - allowed))
+            raise WatchConfigError(
+                f"{source}: notify.{key} has unknown value(s) {bad}; "
+                f"expected any of {', '.join(sorted(allowed))}."
+            )
+        return items
+
+    return NotifySpec(
+        sink=sink,
+        target=str(raw["target"]) if raw.get("target") else None,
+        kinds=_set("kinds", EVENT_KINDS),
+        priorities=_set("priorities"),
     )
 
 
@@ -197,6 +280,7 @@ def parse_config(
         nag_after_seconds=nag_after,
         nag_count=nag_count,
         inbound_only=bool(filters.get("inbound_only", True)),
+        notify=_parse_notify(data.get("notify"), source),
     )
 
 
@@ -414,6 +498,8 @@ def observe(
     now: float,
     seed: bool = False,
     msg_id: str = "",
+    sender_id: str = "",
+    sender_name: str = "",
     warn: Callable[[str], None] = lambda _m: None,
 ) -> Optional[Event]:
     """The state machine for one observation of one watched chat (spec §5.2).
@@ -446,6 +532,21 @@ def observe(
     if is_sender and config.inbound_only:
         st.open, st.nags = False, 0
         return None
+
+    if spec.sender_match is not None:
+        # Both fields, because they carry different things on different networks:
+        # in a WhatsApp group senderName is frequently the raw LID handle rather
+        # than a display name, and on others the id is opaque but the name is
+        # right. Matching either means one regex covers the chat wherever it is.
+        candidates = [c for c in (sender_name, sender_id) if c]
+        if not candidates:
+            warn(
+                f"{spec.label}: sender_match is set but no sender is known for "
+                f"{chat_id} — treating as no match."
+            )
+        if not any(spec.sender_match.search(c) for c in candidates):
+            st.open, st.nags = False, 0
+            return None
 
     if spec.text_match is not None:
         if text is None:
@@ -499,6 +600,8 @@ def scan(
             ts=chat.last_activity_ms or 0,
             is_sender=bool(chat.preview_is_sender),
             text=chat.preview_text,
+            sender_id=chat.preview_sender_id or "",
+            sender_name=chat.preview_sender_name or "",
             config=config, state=state, now=now, seed=seed, warn=warn,
         )
         if event is not None:
@@ -536,6 +639,7 @@ def apply_message(
         spec, message.chat_id,
         ts=message.ts, is_sender=message.is_sender, text=message.text,
         msg_id=message.message_id,
+        sender_id=message.sender_id, sender_name=message.sender_name,
         config=config, state=state, now=now, warn=warn,
     )
 
