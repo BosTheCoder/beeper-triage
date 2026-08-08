@@ -525,3 +525,110 @@ def test_expired_cache_is_ignored(tmp_path, monkeypatch):
         chat_id="!p", title="T", unread_count=0, preview_is_sender=False, is_muted=False,
     )])
     assert c._get_cache() is None
+
+
+# --------------------------- labels v2 (Matrix spaces) ---------------------------
+# Beeper migrated labels to Matrix SPACES in July 2026. The space room ids are not
+# discoverable through any API, so they come from Beeper Desktop's own SQLite index
+# (private schema — every read is defensive, see _label_spaces_from_index).
+
+_SPACE_ID = "!XkDdxAggmwLimVhSrl:beeper.com"
+
+
+def _index_db(tmp_path, rows):
+    """A stand-in for Beeper's index.db with just the columns we read."""
+    import json as _json
+    import sqlite3
+
+    p = tmp_path / "index.db"
+    con = sqlite3.connect(p)
+    con.execute(
+        "create table threads (threadID text, accountID text, thread text, "
+        "timestamp int, is_label int, room_type text)"
+    )
+    for room_id, thread, is_label in rows:
+        con.execute(
+            "insert into threads values (?,?,?,?,?,?)",
+            (room_id, "$space", _json.dumps(thread), None, is_label, "m.space"),
+        )
+    con.commit()
+    con.close()
+    return p
+
+
+def _label_thread(name):
+    return {"extra": {"isLabel": True, "labelData": {"displayName": name}}, "title": name}
+
+
+def _state(children):
+    return [
+        {"type": "m.room.create", "content": {"com.beeper.label": True, "type": "m.space"}},
+        {"type": "m.room.name", "content": {"name": "Close Friends & Family"}},
+        *[{"type": "m.space.child", "state_key": c} for c in children],
+    ]
+
+
+def test_labels_v2_spaces_win_over_stale_v1_account_data(tmp_path, monkeypatch):
+    # The v1 label survives in account data after migrating and is invisible in the
+    # app — reading it would filter on a label the user cannot see.
+    db = _index_db(tmp_path, [(_SPACE_ID, _label_thread("Close Friends & Family"), 1)])
+    monkeypatch.setenv("BEEPER_INDEX_DB", str(db))
+    c = _labelled(_LABELS_PAYLOAD)
+    c.raw_request = MagicMock(return_value=_state(["!x:beeper.local", "!y:beeper.local"]))
+
+    labels = c.list_labels(use_cache=False)
+    assert [(l.label_id, l.title) for l in labels] == [(_SPACE_ID, "Close Friends & Family")]
+    assert labels[0].chat_ids == {"!x:beeper.local", "!y:beeper.local"}
+    # membership comes from the space's Matrix state, not account data
+    assert c.raw_request.call_args.args[1] == (
+        f"/_matrix/client/v3/rooms/%21XkDdxAggmwLimVhSrl%3Abeeper.com/state"
+    )
+
+
+def test_non_label_rooms_in_the_index_are_ignored(tmp_path, monkeypatch):
+    db = _index_db(tmp_path, [
+        (_SPACE_ID, _label_thread("Close Friends & Family"), 1),
+        ("!chat:beeper.local", {"title": "Just a chat"}, 0),
+    ])
+    monkeypatch.setenv("BEEPER_INDEX_DB", str(db))
+    c = _labelled(_LABELS_PAYLOAD)
+    c.raw_request = MagicMock(return_value=_state([]))
+    assert [l.label_id for l in c.list_labels(use_cache=False)] == [_SPACE_ID]
+
+
+def test_unreadable_index_falls_back_to_v1_rather_than_breaking(tmp_path, monkeypatch):
+    # A renamed table or a moved file must not take the queue down with it.
+    bad = tmp_path / "not-a-db.sqlite"
+    bad.write_text("certainly not sqlite")
+    monkeypatch.setenv("BEEPER_INDEX_DB", str(bad))
+    c = _labelled(_LABELS_PAYLOAD)
+    assert [l.title for l in c.list_labels(use_cache=False)] == ["High Priority"]
+
+    monkeypatch.setenv("BEEPER_INDEX_DB", str(tmp_path / "missing.db"))
+    _LABELS_CACHE.clear()
+    assert [l.title for l in c.list_labels(use_cache=False)] == ["High Priority"]
+
+
+def test_no_index_configured_falls_back_to_v1(monkeypatch):
+    monkeypatch.delenv("BEEPER_INDEX_DB", raising=False)
+    c = _labelled(_LABELS_PAYLOAD)
+    assert [l.title for l in c.list_labels(use_cache=False)] == ["High Priority"]
+
+
+def test_label_title_falls_back_when_the_index_json_changes(tmp_path, monkeypatch):
+    # Private schema: if labelData/title vanish, still offer the label rather than
+    # dropping it silently.
+    db = _index_db(tmp_path, [(_SPACE_ID, {"extra": {}}, 1)])
+    monkeypatch.setenv("BEEPER_INDEX_DB", str(db))
+    c = _labelled(_LABELS_PAYLOAD)
+    c.raw_request = MagicMock(return_value=_state([]))
+    assert [l.title for l in c.list_labels(use_cache=False)] == [_SPACE_ID]
+
+
+def test_unreachable_space_state_yields_an_empty_label_not_a_crash(tmp_path, monkeypatch):
+    db = _index_db(tmp_path, [(_SPACE_ID, _label_thread("Close Friends & Family"), 1)])
+    monkeypatch.setenv("BEEPER_INDEX_DB", str(db))
+    c = _labelled(_LABELS_PAYLOAD)
+    c.raw_request = MagicMock(side_effect=BeeperSDKError("HTTP 404 GET ... failed"))
+    labels = c.list_labels(use_cache=False)
+    assert labels[0].chat_ids == set()

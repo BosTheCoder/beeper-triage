@@ -95,6 +95,10 @@ class BeeperClient:
     ACCOUNTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000  # 24 hours — accounts rarely change
     LABELS_ACCOUNT_DATA_TYPE = "com.beeper.labels"
     LABELS_CACHE_TTL_S = 60.0  # in-process only; see _LABELS_CACHE
+    # Labels v2 (July 2026) are Matrix SPACES, not account data. Their room ids
+    # can only be discovered from Beeper Desktop's own SQLite index — point this
+    # at a readable copy of `BeeperTexts/index.db`. Unset => v1 fallback.
+    INDEX_DB_ENV = "BEEPER_INDEX_DB"
     _RAW_METHODS = {"get", "post", "put", "patch", "delete"}
 
     def __init__(self, access_token: str, base_url: Optional[str] = None) -> None:
@@ -410,17 +414,98 @@ class BeeperClient:
         self._matrix_uid = fallback
         return fallback
 
+    def _label_spaces_from_index(self) -> list[tuple[str, str]]:
+        """[(space_room_id, display_name)] for each labels-v2 space, read out of
+        Beeper Desktop's own SQLite index.
+
+        Beeper does NOT expose labels v2 anywhere in its API — staff closed the
+        request saying it comes "after the feature matures" (desktop-api-python
+        #5), and there is no discovery route: /v1/chats omits spaces, chats carry
+        no m.space.parent, and joined_rooms/hierarchy aren't proxied. So the room
+        ids come from the app's index, and only from there.
+
+        This reads a private, undocumented schema. Every failure — no env var,
+        missing file, renamed table, changed JSON — returns [] so the caller
+        falls back to v1 rather than breaking the queue.
+        """
+        db_path = os.environ.get(self.INDEX_DB_ENV, "").strip()
+        if not db_path or not os.path.exists(db_path):
+            return []
+        import sqlite3
+
+        # Never copy this file — it is ~700MB. A plain read-only open sees
+        # Beeper's live WAL and costs ~50ms; `immutable=1` is the fallback for
+        # when the -shm/-wal pair can't be opened read-only (it skips the WAL,
+        # so a label created seconds ago may not show until Beeper checkpoints).
+        rows: list = []
+        for uri in (f"file:{db_path}?mode=ro", f"file:{db_path}?mode=ro&immutable=1"):
+            try:
+                con = sqlite3.connect(uri, uri=True)
+                try:
+                    rows = con.execute(
+                        "select threadID, thread from threads where is_label = 1"
+                    ).fetchall()
+                finally:
+                    con.close()
+                break
+            except Exception:
+                continue
+        if not rows:
+            return []
+
+        out: list[tuple[str, str]] = []
+        for room_id, blob in rows:
+            if not room_id:
+                continue
+            title = ""
+            try:
+                data = json.loads(blob) if isinstance(blob, (str, bytes)) else {}
+                extra = data.get("extra") or {}
+                title = str((extra.get("labelData") or {}).get("displayName") or "").strip()
+                title = title or str(data.get("title") or "").strip()
+            except Exception:
+                pass  # name falls back to the room id below
+            out.append((str(room_id), title or str(room_id)))
+        return out
+
+    def _label_members(self, space_id: str) -> set[str]:
+        """The chat ids filed under a labels-v2 space, read live from the API.
+
+        The space's Matrix state IS reachable once you know its id — each
+        ``m.space.child`` event's state_key is one of our chat_ids."""
+        from urllib.parse import quote
+
+        path = f"/_matrix/client/v3/rooms/{quote(space_id, safe='')}/state"
+        try:
+            payload = self.raw_request("get", path)
+        except BeeperSDKError:
+            return set()
+        events = payload if isinstance(payload, list) else []
+        if isinstance(payload, dict):
+            events = payload.get("events") or []
+        return {
+            str(e.get("state_key"))
+            for e in events
+            if isinstance(e, dict) and e.get("type") == "m.space.child" and e.get("state_key")
+        }
+
     def list_labels(self, use_cache: bool = True) -> list[BeeperLabel]:
         """The user's labels and the chats filed under each.
 
-        Labels are not in the /v1 API at all — they live in Matrix user account
-        data under ``com.beeper.labels``, shaped
-        ``{"<uuid>": {"createdAt": …, "title": …, "rooms": ["!id:server", …]}}``.
-        The room ids ARE our chat_ids.
+        TWO systems exist, and v1 is a trap: labels **v1** lived in Matrix user
+        account data under ``com.beeper.labels``, but Beeper migrated in July
+        2026 to **v2**, where each label is a Matrix SPACE whose children are the
+        filed chats. A v1 label left over from before the migration still sits in
+        account data while being invisible in the app, so v2 wins when present
+        and v1 is only a fallback for users who never migrated.
 
-        A user who has never made a label has no such event, and Beeper answers
-        HTTP 500 "No account data event found" — that is "no labels", not an
-        error, so it returns []."""
+        v2 discovery needs Beeper's local index (see ``_label_spaces_from_index``);
+        membership is then read live from the API. Where the index isn't
+        available, this degrades to v1 rather than returning nothing.
+
+        A user with no labels at all has no account data event, and Beeper
+        answers HTTP 500 "No account data event found" — that is "no labels",
+        not an error, so it returns []."""
         user_id = self.matrix_user_id()
         if not user_id:
             return []
@@ -429,6 +514,15 @@ class BeeperClient:
             cached = _LABELS_CACHE.get(user_id)
             if cached is not None and (now - cached[0]) < self.LABELS_CACHE_TTL_S:
                 return list(cached[1])
+
+        spaces = self._label_spaces_from_index()
+        if spaces:
+            labels = [
+                BeeperLabel(label_id=rid, title=title, chat_ids=self._label_members(rid))
+                for rid, title in spaces
+            ]
+            _LABELS_CACHE[user_id] = (now, labels)
+            return list(labels)
 
         path = (
             f"/_matrix/client/v3/user/{user_id}"
