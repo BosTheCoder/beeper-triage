@@ -73,6 +73,7 @@ class BeeperChat:
     network: Optional[str] = None  # Raw network from the chat (e.g. "whatsapp")
     is_archived: bool = False  # True when the chat is archived (out of inbox)
     is_pinned: bool = False  # True when pinned — Beeper CANNOT archive a pinned chat
+    is_low_priority: bool = False  # Beeper's "Low priority" section — communities, mostly
     preview_text: Optional[str] = None  # Body of the last message, for content matching
     # Who sent the last message. In a group the name is often the raw network
     # handle (`@whatsapp_lid-…`) rather than a display name, so `watch`'s
@@ -293,6 +294,9 @@ class BeeperClient:
                     ),
                     is_pinned=bool(
                         self._get_attr(chat, "is_pinned", "isPinned", default=False)
+                    ),
+                    is_low_priority=bool(
+                        self._get_attr(chat, "is_low_priority", "isLowPriority", default=False)
                     ),
                     preview_text=preview_text,
                     preview_sender_id=preview_sender_id,
