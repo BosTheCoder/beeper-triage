@@ -566,6 +566,7 @@ def test_resolve_label_chat_ids_unions_the_named_labels():
     ])
     assert inbox.resolve_label_chat_ids(c, ["hp", "later"]) == {"a", "b", "c"}
     assert inbox.resolve_label_chat_ids(c, []) == set()
+    assert inbox.resolve_label_chat_ids(c, ["Later"]) == {"c"}  # by title too
 
 
 def test_queue_filters_by_label_id_without_a_per_chat_call():
@@ -574,6 +575,19 @@ def test_queue_filters_by_label_id_without_a_per_chat_call():
     q = inbox.build_queue(c, inbox.QueueFilters(labels=["hp"]), verify=False)
     assert {x.chat_id for x in q} == {"a", "b"}
     assert c.label_reads == 1  # one read for the whole queue, not one per chat
+
+
+def test_unlabelled_pseudo_label_hides_only_the_unticked_labels():
+    # "Everything except Contractors": tick Unlabelled + Friends, leave
+    # Contractors off. A chat in both Friends and Contractors still shows.
+    chats = [_chat("plain"), _chat("friend"), _chat("builder"), _chat("both")]
+    c = FakeClient(chats, labels=[
+        _label("fr", "Friends", ["friend", "both"]),
+        _label("con", "Contractors", ["builder", "both"]),
+    ])
+    f = inbox.QueueFilters(labels=[inbox.UNLABELLED, "fr"])
+    q = inbox.build_queue(c, f, verify=False)
+    assert {x.chat_id for x in q} == {"plain", "friend", "both"}
 
 
 def test_resolve_labels_leaves_a_caller_supplied_mapping_alone():

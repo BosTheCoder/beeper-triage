@@ -42,6 +42,7 @@ class QueueFilters:
     oldest_first: bool = False  # longest-waiting chats first instead of most recent
     labels: Optional[list[str]] = None  # Beeper label ids; None = all
     label_chat_ids: Optional[set[str]] = None  # `labels` already resolved to chat_ids
+    label_exclude_ids: Optional[set[str]] = None  # UNLABELLED mode: chats to hide
 
     def visible(self, chat: BeeperChat) -> bool:
         """Passes the cheap filters (archive / group / muted / network / label).
@@ -66,14 +67,25 @@ class QueueFilters:
             return False
         if self.label_chat_ids is not None and chat.chat_id not in self.label_chat_ids:
             return False
+        if self.label_exclude_ids and chat.chat_id in self.label_exclude_ids:
+            return False
         return True
 
     def resolve_labels(self, client: BeeperClient) -> "QueueFilters":
         """Turn ``labels`` (ids) into ``label_chat_ids`` once, before filtering.
 
         No-op when no labels are asked for, or when the caller already supplied
-        the chat_ids. Returns self so it can be chained."""
-        if self.labels and self.label_chat_ids is None:
+        the chat_ids. Returns self so it can be chained.
+
+        With ``UNLABELLED`` among the ids the filter flips to exclusion: hide
+        chats filed ONLY under unticked labels, keep everything else. That is
+        how "all of WhatsApp except Contractors" is expressed without also
+        dropping every chat that has no label at all."""
+        if self.labels and UNLABELLED in self.labels and self.label_exclude_ids is None:
+            ticked = resolve_label_chat_ids(client, self.labels)
+            every = {cid for lb in client.list_labels() for cid in lb.chat_ids}
+            self.label_exclude_ids = every - ticked
+        elif self.labels and self.label_chat_ids is None:
             self.label_chat_ids = resolve_label_chat_ids(client, self.labels)
         return self
 
@@ -82,14 +94,21 @@ class QueueFilters:
         return self.visible(chat) and _needs_reply(chat)
 
 
+# Pseudo label id for "chats with no label" — see QueueFilters.resolve_labels.
+UNLABELLED = "__unlabelled__"
+
+
 def resolve_label_chat_ids(client: BeeperClient, label_ids: Iterable[str]) -> set[str]:
-    """Every chat_id filed under any of ``label_ids`` (one cached label read)."""
+    """Every chat_id filed under any of ``label_ids`` (one cached label read).
+
+    Titles are accepted as well as ids: a label's room id changes whenever
+    ``beeper-labels`` rebuilds it, so a saved filter keyed by title survives."""
     wanted = {str(x) for x in label_ids if x}
     if not wanted:
         return set()
     out: set[str] = set()
     for label in client.list_labels():
-        if label.label_id in wanted:
+        if label.label_id in wanted or label.title in wanted:
             out |= set(label.chat_ids)
     return out
 
