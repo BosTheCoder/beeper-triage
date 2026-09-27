@@ -71,6 +71,8 @@ Both commands support `--agent` mode for non-interactive JSON I/O.
 - **watch.py**: The `beeper watch` engine — config validation (`parse_config` for a decoded mapping, `load_config` for a TOML file), the poll state machine (`scan` / `nag_pass`), atomic state file, and the `run` loop. Pure: chats in, events out, no typer and no requests, so the state machine is testable without a network **and vendorable into beeper-inbox's container**. Spec: `docs/superpowers/specs/2026-08-07-beeper-watch-design.md`.
 - **watch_cli.py**: Typer wiring over `watch.py` (`watch`, `watch list`, `watch check`). Kept separate so the engine stays dependency-free — don't import typer into `watch.py`.
 - **watch_ws.py**: Push transport for `watch` — Beeper's experimental event socket (`/v1/ws`, advertised by `GET /v1/info`). Transport only: connect, subscribe, reconnect, yield normalised `WatchMessage`. It makes no decisions; those stay in `watch.observe`. Needs `websockets`, imported lazily, so poll-only callers never load it.
+- **labels.py**: The `beeper labels sync` engine — mirrors Google Contacts labels into Beeper labels (matches 1:1s by phone/email, follows merged chats). Labels are Matrix spaces; the Desktop API can create/leave them but not edit, so a change rebuilds the label (new room id — key labels by name). A ledger (`~/.config/beeper-labels/ledger.json`) records what the sync added so removals never touch hand-filed chats. Runs twice daily via win-scheduled-tasks `beeper-labels/Sync`.
+- **labels_cli.py**: Typer wiring over `labels.py`.
 - **wsl_proxy.py**: TCP proxy (runs on Windows) bridging WSL IPv4 → Beeper's IPv6 loopback. Entry point: `beeper-proxy`.
 
 ### Key Design Decisions
