@@ -55,7 +55,8 @@ def _sync(
         human.append("dry run — pass --apply to write")
     emit({"applied": apply, "labels": [p.to_dict() for p in plans], "log": lines,
           "missingGoogleLabels": missing}, json_flag=eff_json, human="\n".join(human))
-    if missing or any("!" in line for line in lines):
+    # Warnings start with "!"; room ids contain one too, so match the prefix only.
+    if missing or any(line.startswith("!") for line in lines):
         raise typer.Exit(code=1)
 
 

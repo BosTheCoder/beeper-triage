@@ -343,7 +343,7 @@ def sync(api: Api, groups: dict[str, list[dict]], *, apply: bool,
                 try:
                     leave(api, rid)
                 except Exception as exc:  # the new label exists; say so loudly
-                    log(f"{name}: ! old label {rid} not left, duplicate in Beeper: {exc}")
+                    log(f"! {name}: old label {rid} not left, duplicate in Beeper: {exc}")
             p.label_id = new
         ledger[name] = sorted(next_owned(p, owned))
         save_ledger(ledger, ledger_path)
