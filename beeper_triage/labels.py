@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,14 +64,25 @@ def google_token(user: str = DEFAULT_EMAIL) -> str:
         raise LabelSyncError(f"Google token refresh failed ({e.code}): {e.read().decode()[:300]}")
 
 
-def _gget(token: str, path: str, params: dict) -> dict:
+# People API's per-minute read quota is shared with everything else on the GCP
+# project, and it was already spent on about half the 08:00/20:00 runs in late
+# Sep 2026 (429 on the very first call). The quota refills each minute, so
+# waiting it out is the fix; the delays add up to past a full window.
+RETRY_DELAYS = (20, 45, 90)
+
+
+def _gget(token: str, path: str, params: dict, *, sleep=time.sleep) -> dict:
     url = f"{PEOPLE}{path}?{urllib.parse.urlencode(params, doseq=True)}"
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        raise LabelSyncError(f"Google GET {path} -> {e.code}: {e.read().decode()[:300]}")
+    for delay in (*RETRY_DELAYS, None):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 503) and delay is not None:
+                sleep(delay)
+                continue
+            raise LabelSyncError(f"Google GET {path} -> {e.code}: {e.read().decode()[:300]}")
 
 
 def google_groups(token: str, wanted: list[str]) -> tuple[dict[str, list[dict]], list[str]]:

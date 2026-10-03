@@ -104,3 +104,27 @@ def test_norm_phone():
     assert labels.norm_phone("+44 7730 784352") == "+447730784352"
     assert labels.norm_phone("00254725717215") == "+254725717215"
     assert labels.norm_phone("") == ""
+
+
+def test_google_quota_429_is_waited_out_not_fatal(monkeypatch):
+    import io
+    import urllib.error
+    from beeper_triage import labels
+
+    answers = [429, 429, None]
+    waits = []
+
+    def fake_urlopen(req, timeout):
+        code = answers.pop(0)
+        if code:
+            raise urllib.error.HTTPError(req.full_url, code, "quota", {}, io.BytesIO(b"{}"))
+        return io.BytesIO(b'{"contactGroups": []}')
+
+    monkeypatch.setattr(labels.urllib.request, "urlopen", fake_urlopen)
+    assert labels._gget("t", "/contactGroups", {}, sleep=waits.append) == {"contactGroups": []}
+    assert len(waits) == 2
+
+    answers[:] = [403]
+    import pytest
+    with pytest.raises(labels.LabelSyncError):
+        labels._gget("t", "/contactGroups", {}, sleep=waits.append)
