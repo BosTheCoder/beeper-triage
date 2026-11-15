@@ -39,6 +39,7 @@ class QueueFilters:
     include_muted: bool = False
     networks: Optional[list[str]] = None  # lowercase slugs; None = all
     include_archived: bool = False  # surface archived chats too (e.g. auto-archived SMS)
+    include_low_priority: bool = False  # Beeper's own inbox hides Low Priority (contractors live there)
     oldest_first: bool = False  # longest-waiting chats first instead of most recent
     labels: Optional[list[str]] = None  # Beeper label ids; None = all
     label_chat_ids: Optional[set[str]] = None  # `labels` already resolved to chat_ids
@@ -58,6 +59,8 @@ class QueueFilters:
         mapping. Semantics: union within labels, AND with networks — "WhatsApp
         *and* High Priority"."""
         if chat.is_archived and not self.include_archived:
+            return False
+        if chat.is_low_priority and not self.include_low_priority:
             return False
         if not self.groups and chat.is_group:
             return False

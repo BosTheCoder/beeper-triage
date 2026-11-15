@@ -220,3 +220,11 @@ def test_render_fzf_lines_has_chat_id_first_column():
     chat_id, display = line.split("\t", 1)
     assert chat_id == "!x:beeper.local"
     assert display.startswith("Mum ")
+
+
+def test_queue_hides_low_priority_like_beepers_own_inbox():
+    from beeper_triage.inbox import QueueFilters
+    low = _chat(title="Roofer")
+    low.is_low_priority = True
+    assert not QueueFilters().visible(low)
+    assert QueueFilters(include_low_priority=True).visible(low)
