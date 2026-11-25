@@ -9,12 +9,16 @@ class FakeBeeper:
     def __init__(self, chats, rooms):
         self.chats = chats
         self.rooms = rooms
+        self.contacts = {}
         self.left = []
         self.n = 0
 
     def __call__(self, method, path, query=None, body=None):
         if path == "/v1/chats":
             return {"items": self.chats, "hasMore": False}
+        if path.endswith("/contacts"):  # search: every contact whose number has the digit
+            q = query["query"]
+            return {"items": [{"id": i, "phoneNumber": n} for i, n in self.contacts.items() if q in n]}
         if path == "/v1/labels":
             return [{"id": rid, "name": r[0]} for rid, r in self.rooms.items() if rid not in self.left]
         if path.endswith("/createRoom"):
@@ -128,3 +132,36 @@ def test_google_quota_429_is_waited_out_not_fatal(monkeypatch):
     import pytest
     with pytest.raises(labels.LabelSyncError):
         labels._gget("t", "/contactGroups", {}, sleep=waits.append)
+
+
+def bare(cid, pid, name, network="WhatsApp"):
+    """A 1:1 as Beeper Desktop 4.3.340 returns it: no phone, no email."""
+    parts = [{"id": "@me:beeper.com", "isSelf": True}, {"id": pid, "fullName": name}]
+    return {"id": cid, "type": "single", "network": network, "accountID": "whatsapp.1",
+            "participants": {"items": parts}}
+
+
+def test_bare_participants_match_through_contacts_and_name(tmp_path):
+    fake = FakeBeeper([
+        bare("!bob", "@whatsapp_lid-42:beeper.local", "WA push name"),   # number via contacts
+        bare("!ann-sms", "@gmessages_2.7:beeper.local", "Ann Plumber", "Google Messages"),  # by name
+        bare("!ann-ig", "@instagramgo_9:beeper.local", "Ann Plumber", "Instagram"),  # names unsafe here
+    ], {})
+    fake.contacts = {"lid-42": "+447700900001"}
+    labels.sync(fake, {"Contractors": [person("Bob", "07700 900001"), person("Ann Plumber", "07700 900002")]},
+                apply=True, ledger_path=tmp_path / "l.json")
+    assert fake.members("Contractors") == {"!bob", "!ann-sms"}
+
+
+def test_refuses_to_empty_a_label_when_matching_breaks(tmp_path):
+    ledger = tmp_path / "l.json"
+    people = [person(f"P{i}", f"077009000{i:02}") for i in range(12)]
+    fake = FakeBeeper([dm(f"!c{i}", f"+4477009000{i:02}") for i in range(12)], {})
+    labels.sync(fake, {"Contractors": people}, apply=True, ledger_path=ledger)
+    fake.chats = [bare(f"!c{i}", f"@whatsapp_lid-{i}:x", "?") for i in range(12)]  # numbers gone
+    try:
+        labels.sync(fake, {"Contractors": people}, apply=True, ledger_path=ledger)
+        raise AssertionError("should have refused")
+    except labels.LabelSyncError:
+        pass
+    assert len(fake.members("Contractors")) == 12

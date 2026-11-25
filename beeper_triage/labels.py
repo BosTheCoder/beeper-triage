@@ -134,8 +134,14 @@ def person_keys(person: dict) -> set[str]:
     keys = {norm_phone(ph.get("canonicalForm") or ph.get("value"))
             for ph in person.get("phoneNumbers", [])}
     keys |= {(em.get("value") or "").strip().lower() for em in person.get("emailAddresses", [])}
+    keys |= {name_key(n.get("displayName")) for n in person.get("names", [])}
     keys.discard("")
     return keys
+
+
+def name_key(name: Optional[str]) -> str:
+    name = (name or "").strip().lower()
+    return f"name:{name}" if name else ""
 
 
 def person_name(person: dict) -> str:
@@ -160,6 +166,34 @@ def all_chats(api: Api) -> list[dict]:
         if not page.get("hasMore") or not items:
             return chats
         cursor = page["oldestCursor"]
+
+
+# Beeper Desktop 4.3.340 (Nov 2026) stopped putting phoneNumber/email on chat
+# participants, and WhatsApp ids became LIDs, so the 23 Nov sync matched
+# nothing and emptied every label. The per-account contacts search still has
+# the numbers, keyed by the participant id's local part. It needs a query and
+# ignores limit, so one search per digit lists every contact with a number.
+PHONE_NETWORKS = {"WhatsApp"}
+
+
+def fill_phones(api: Api, chats: list[dict]) -> None:
+    """Put the phone number back on 1:1 participants the chat list left bare."""
+    bare = [p for c in chats if c.get("type") == "single" and c.get("network") in PHONE_NETWORKS
+            for p in (c.get("participants") or {}).get("items", [])
+            if not p.get("isSelf") and not p.get("phoneNumber")]
+    if not bare:
+        return
+    phones: dict[str, str] = {}
+    for acc in {c["accountID"] for c in chats if c.get("network") in PHONE_NETWORKS}:
+        for d in "0123456789":  # ponytail: ~40s for 18k contacts; fine twice a day
+            for it in api("get", f"/v1/accounts/{quote(acc, safe='')}/contacts",
+                          query={"query": d}).get("items", []):
+                if it.get("phoneNumber"):
+                    phones[it["id"]] = it["phoneNumber"]
+    for p in bare:
+        local = p.get("id", "")[1:].split(":")[0].split("_", 1)[-1]  # @whatsapp_lid-1:x -> lid-1
+        if local in phones:
+            p["phoneNumber"] = phones[local]
 
 
 def beeper_labels(api: Api) -> dict[str, str]:
@@ -209,16 +243,25 @@ def leave(api: Api, rid: str) -> None:
 
 # --- matching ------------------------------------------------------------------
 
+# Networks whose chat names come from his phone book, so an exact name is a
+# safe match when no number is known (WhatsApp contacts with no number on the
+# account, SMS chats whose participants now carry none).
+NAME_NETWORKS = {"WhatsApp", "Google Messages"}
+
+
 def chat_keys(chat: dict) -> set[str]:
-    """Phone/email keys of the other person in a 1:1. Groups never match."""
+    """Phone/email keys of the other person in a 1:1, or their name when
+    neither is known. Groups never match."""
     if chat.get("type") != "single":
         return set()
     keys: set[str] = set()
     for p in (chat.get("participants") or {}).get("items", []):
         if p.get("isSelf"):
             continue
-        keys.add(norm_phone(p.get("phoneNumber")))
-        keys.add((p.get("email") or "").strip().lower())
+        ids = {norm_phone(p.get("phoneNumber")), (p.get("email") or "").strip().lower()} - {""}
+        if not ids and chat.get("network") in NAME_NETWORKS:
+            ids = {name_key(p.get("fullName"))}
+        keys |= ids
     keys.discard("")
     return keys
 
@@ -336,15 +379,25 @@ def sync(api: Api, groups: dict[str, list[dict]], *, apply: bool,
          ledger_path: Path = LEDGER, log: Callable[[str], None] = lambda s: None) -> list[LabelPlan]:
     """Plan every label and, with ``apply``, rebuild the ones that changed."""
     chats = all_chats(api)
+    fill_phones(api, chats)
     labels = beeper_labels(api)
     ledger = load_ledger(ledger_path)
-    plans = []
+    plans, looks, owns = [], {}, {}
     for name, (wanted, unmatched) in match(groups, chats).items():
         rid = labels.get(name.lower())
-        current, look = label_state(api, rid) if rid else (set(), {})
-        owned = set(ledger[name]) if name in ledger else None
-        p = plan_label(name, rid, len(groups[name]), wanted, unmatched, current, owned)
-        plans.append(p)
+        current, looks[name] = label_state(api, rid) if rid else (set(), {})
+        owns[name] = set(ledger[name]) if name in ledger else None
+        plans.append(plan_label(name, rid, len(groups[name]), wanted, unmatched, current, owns[name]))
+    # A broken match (an API change, half-loaded Beeper) looks like everyone
+    # leaving their Google labels. Refuse rather than empty the labels, as the
+    # 23 Nov 2026 run did. ponytail: no --force; a genuine mass removal is rare.
+    for p in plans:
+        if apply and len(p.remove) >= 10 and len(p.remove) > len(p.current) / 2:
+            raise LabelSyncError(
+                f"{p.name}: would remove {len(p.remove)} of {len(p.current)} chats; "
+                "refusing (matching is probably broken, check `beeper labels sync -v`)")
+    for p in plans:
+        name, rid, look, owned = p.name, p.label_id, looks[p.name], owns[p.name]
         if not apply:
             continue
         if p.changed:
