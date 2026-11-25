@@ -16,9 +16,9 @@ class FakeBeeper:
     def __call__(self, method, path, query=None, body=None):
         if path == "/v1/chats":
             return {"items": self.chats, "hasMore": False}
-        if path.endswith("/contacts"):  # search: every contact whose number has the digit
-            q = query["query"]
-            return {"items": [{"id": i, "phoneNumber": n} for i, n in self.contacts.items() if q in n]}
+        if path.endswith("/contacts"):  # exact lookup by E.164 number
+            return {"items": [{"id": i, "phoneNumber": n} for i, n in self.contacts.items()
+                              if n == query["query"]]}
         if path == "/v1/labels":
             return [{"id": rid, "name": r[0]} for rid, r in self.rooms.items() if rid not in self.left]
         if path.endswith("/createRoom"):
@@ -141,16 +141,19 @@ def bare(cid, pid, name, network="WhatsApp"):
             "participants": {"items": parts}}
 
 
-def test_bare_participants_match_through_contacts_and_name(tmp_path):
+def test_bare_participants_match_through_contact_lookup(tmp_path):
     fake = FakeBeeper([
-        bare("!bob", "@whatsapp_lid-42:beeper.local", "WA push name"),   # number via contacts
-        bare("!ann-sms", "@gmessages_2.7:beeper.local", "Ann Plumber", "Google Messages"),  # by name
-        bare("!ann-ig", "@instagramgo_9:beeper.local", "Ann Plumber", "Instagram"),  # names unsafe here
+        bare("!bob", "@whatsapp_lid-42:beeper.local", "Bob"),
+        # SMS: the contact's id differs from the chat's, so only the name links them
+        bare("!bob-sms", "@gmessages_2.7:beeper.local", "Bob", "Google Messages"),
+        bare("!stranger", "@whatsapp_lid-99:beeper.local", "Bob"),  # same name, other number
     ], {})
-    fake.contacts = {"lid-42": "+447700900001"}
-    labels.sync(fake, {"Contractors": [person("Bob", "07700 900001"), person("Ann Plumber", "07700 900002")]},
+    fake.contacts = {"@whatsapp_lid-42:beeper.local": "+447700900001",
+                     "@gmessages_2.9575:beeper.local": "+447700900001",
+                     "@whatsapp_lid-99:beeper.local": "+447700900099"}
+    labels.sync(fake, {"Contractors": [person("Bob", "07700 900001")]},
                 apply=True, ledger_path=tmp_path / "l.json")
-    assert fake.members("Contractors") == {"!bob", "!ann-sms"}
+    assert fake.members("Contractors") == {"!bob", "!bob-sms"}
 
 
 def test_refuses_to_empty_a_label_when_matching_breaks(tmp_path):

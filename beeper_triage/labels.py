@@ -168,32 +168,36 @@ def all_chats(api: Api) -> list[dict]:
         cursor = page["oldestCursor"]
 
 
-# Beeper Desktop 4.3.340 (Nov 2026) stopped putting phoneNumber/email on chat
-# participants, and WhatsApp ids became LIDs, so the 23 Nov sync matched
-# nothing and emptied every label. The per-account contacts search still has
-# the numbers, keyed by the participant id's local part. It needs a query and
-# ignores limit, so one search per digit lists every contact with a number.
-PHONE_NETWORKS = {"WhatsApp"}
+# Beeper Desktop 4.3.340 (Nov 2026) stopped putting phoneNumber on chat
+# participants (the API docs say it is omitted "if unknown", and WhatsApp ids
+# are now LIDs, not numbers), so the 23 Nov sync matched nothing and emptied
+# every label. The documented exact lookup still knows the numbers: searching
+# an account's contacts with an E.164 number returns that person under the same
+# user id the chat participant has. contacts/list can't replace this: in
+# 4.3.340 it stops at 200 contacts with no cursor. Google Messages is the
+# exception: its contacts and its chat participants have different ids, so
+# chat_keys falls back to the exact name there (see SMS_NAME_NETWORK).
+LOOKUP_NETWORKS = {"WhatsApp", "Google Messages", "Telegram"}
 
 
-def fill_phones(api: Api, chats: list[dict]) -> None:
-    """Put the phone number back on 1:1 participants the chat list left bare."""
-    bare = [p for c in chats if c.get("type") == "single" and c.get("network") in PHONE_NETWORKS
+def fill_phones(api: Api, chats: list[dict], groups: dict[str, list[dict]]) -> None:
+    """Put each Google contact's number on the 1:1 participants it belongs to."""
+    bare = {p["id"]: p for c in chats
+            if c.get("type") == "single" and c.get("network") in LOOKUP_NETWORKS
             for p in (c.get("participants") or {}).get("items", [])
-            if not p.get("isSelf") and not p.get("phoneNumber")]
+            if not p.get("isSelf") and not p.get("phoneNumber") and p.get("id")}
     if not bare:
         return
-    phones: dict[str, str] = {}
-    for acc in {c["accountID"] for c in chats if c.get("network") in PHONE_NETWORKS}:
-        for d in "0123456789":  # ponytail: ~40s for 18k contacts; fine twice a day
-            for it in api("get", f"/v1/accounts/{quote(acc, safe='')}/contacts",
-                          query={"query": d}).get("items", []):
-                if it.get("phoneNumber"):
-                    phones[it["id"]] = it["phoneNumber"]
-    for p in bare:
-        local = p.get("id", "")[1:].split(":")[0].split("_", 1)[-1]  # @whatsapp_lid-1:x -> lid-1
-        if local in phones:
-            p["phoneNumber"] = phones[local]
+    numbers = {k for people in groups.values() for person in people
+               for k in person_keys(person) if k.startswith("+")}
+    accounts = {c["accountID"] for c in chats
+                if c.get("network") in LOOKUP_NETWORKS and c.get("accountID")}
+    for acc in accounts:
+        for number in numbers:
+            res = api("get", f"/v1/accounts/{quote(acc, safe='')}/contacts", query={"query": number})
+            for user in res.get("items", []):
+                if user.get("id") in bare:
+                    bare[user["id"]]["phoneNumber"] = number
 
 
 def beeper_labels(api: Api) -> dict[str, str]:
@@ -243,25 +247,24 @@ def leave(api: Api, rid: str) -> None:
 
 # --- matching ------------------------------------------------------------------
 
-# Networks whose chat names come from his phone book, so an exact name is a
-# safe match when no number is known (WhatsApp contacts with no number on the
-# account, SMS chats whose participants now carry none).
-NAME_NETWORKS = {"WhatsApp", "Google Messages"}
+# Google Messages names a chat after the Google Contacts entry, and the API has
+# no link from an SMS chat to a number (see fill_phones), so an exact name
+# match is the only way to label those chats.
+SMS_NAME_NETWORK = "Google Messages"
 
 
 def chat_keys(chat: dict) -> set[str]:
-    """Phone/email keys of the other person in a 1:1, or their name when
-    neither is known. Groups never match."""
+    """Phone/email keys of the other person in a 1:1. Groups never match."""
     if chat.get("type") != "single":
         return set()
     keys: set[str] = set()
     for p in (chat.get("participants") or {}).get("items", []):
         if p.get("isSelf"):
             continue
-        ids = {norm_phone(p.get("phoneNumber")), (p.get("email") or "").strip().lower()} - {""}
-        if not ids and chat.get("network") in NAME_NETWORKS:
-            ids = {name_key(p.get("fullName"))}
-        keys |= ids
+        keys.add(norm_phone(p.get("phoneNumber")))
+        keys.add((p.get("email") or "").strip().lower())
+        if chat.get("network") == SMS_NAME_NETWORK and not p.get("phoneNumber"):
+            keys.add(name_key(p.get("fullName")))
     keys.discard("")
     return keys
 
@@ -379,7 +382,7 @@ def sync(api: Api, groups: dict[str, list[dict]], *, apply: bool,
          ledger_path: Path = LEDGER, log: Callable[[str], None] = lambda s: None) -> list[LabelPlan]:
     """Plan every label and, with ``apply``, rebuild the ones that changed."""
     chats = all_chats(api)
-    fill_phones(api, chats)
+    fill_phones(api, chats, groups)
     labels = beeper_labels(api)
     ledger = load_ledger(ledger_path)
     plans, looks, owns = [], {}, {}
